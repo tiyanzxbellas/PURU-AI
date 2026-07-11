@@ -11,7 +11,8 @@ from firebase import (
 sandboxes: dict[int, Sandbox] = {}
 _sandbox_versions: dict[int, str] = {}  # chat_id -> last synced Firebase version
 
-BASH_TIMEOUT = 60_000  # 1 minute in ms
+BASH_TIMEOUT = 120_000  # 2 minutes in ms
+SANDBOX_TIMEOUT = 300_000  # 5 minutes in ms
 
 
 def _sync_sandbox(sandbox, chat_id: int):
@@ -31,7 +32,7 @@ def _sync_sandbox(sandbox, chat_id: int):
 
 def get_sandbox(user_id: int) -> Sandbox:
     if user_id not in sandboxes:
-        sandboxes[user_id] = Sandbox(api_key=E2B_API_KEY)
+        sandboxes[user_id] = Sandbox(api_key=E2B_API_KEY, timeout=SANDBOX_TIMEOUT)
     return sandboxes[user_id]
 
 
@@ -49,7 +50,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Execute a bash command in the sandbox. Timeout: 60 seconds.",
+            "description": "Execute a bash command in the sandbox. Timeout: 2 minutes.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -245,8 +246,14 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, delete_file, send_file.", None
 
     except Exception as e:
-        if _retry:
-            # Sandbox may be dead — recreate and retry once
+        err_str = str(e).lower()
+        is_sandbox_gone = "sandbox" in err_str and ("not found" in err_str or "does not exist" in err_str or "timeout" in err_str)
+        if _retry and is_sandbox_gone:
+            # Sandbox is dead/expired — force close and recreate
+            close_sandbox(user_id)
+            return _execute_tool_inner(user_id, name, arguments, _retry=False)
+        if _retry and not is_sandbox_gone:
+            # Other error — still try recreating once
             close_sandbox(user_id)
             return _execute_tool_inner(user_id, name, arguments, _retry=False)
         return f"Tool error ({name}): {str(e)}\nTip: The sandbox may have died. Try /clear to reset.", None
