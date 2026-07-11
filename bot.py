@@ -16,6 +16,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from sandbox import get_sandbox
 from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
 from agent import chat_with_tools, chat_stream, clear_history, get_context_info, compact_history
 
@@ -256,7 +257,8 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n\n"
-        "_Send any message to chat with AI._",
+        "_Send any message to chat with AI._\n"
+        "_You can also send files — the AI will review them automatically._",
         parse_mode="Markdown",
         quote=True,
     )
@@ -319,6 +321,59 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _track_message(update.effective_user.id, update.effective_user.username, "clear")
     clear_history(update.effective_chat.id)
     await update.message.reply_text("History cleared.", quote=True)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle files sent by users — upload to sandbox and inject a prompt for the AI."""
+    if not update.message or not update.message.document:
+        return
+
+    user = update.effective_user
+    _track_message(user.id, user.username)
+    chat_id = update.effective_chat.id
+
+    info = get_context_info(chat_id)
+    if info["tokens"] >= TOKEN_BLOCK_LIMIT:
+        await update.message.reply_text(
+            f"🚫 *Context penuh:* `{info['tokens']:,}` tokens\n"
+            f"Jalankan `/compact` terlebih dahulu untuk merangkum dan membebaskan konteks.",
+            parse_mode="Markdown",
+            quote=True,
+        )
+        return
+
+    doc = update.message.document
+    file_name = doc.file_name or "unknown_file"
+    caption = update.message.caption or ""
+
+    # Download file from Telegram
+    try:
+        tg_file = await doc.get_file()
+        file_bytes = await tg_file.download_as_bytearray()
+    except Exception as e:
+        logger.warning("Failed to download file from Telegram: %s", e)
+        await update.message.reply_text(f"Failed to download file: {e}", quote=True)
+        return
+
+    # Upload to E2B sandbox
+    file_path = f"/home/user/uploads/{file_name}"
+    try:
+        sandbox = get_sandbox(chat_id)
+        sandbox.files.write(file_path, bytes(file_bytes))
+    except Exception as e:
+        logger.warning("Failed to upload file to sandbox: %s", e)
+        await update.message.reply_text(f"Failed to save file to sandbox: {e}", quote=True)
+        return
+
+    # Build prompt for the AI
+    prompt = f"User has sent a file at `{file_path}`\n"
+    if caption:
+        prompt += f"Caption: {caption}\n"
+    prompt += f"File size: {len(file_bytes):,} bytes, type: {doc.mime_type or 'unknown'}\n"
+    prompt += "Please review the file and respond accordingly."
+
+    logger.info("File received from user %s: %s (%d bytes) -> %s", user.id, file_name, len(file_bytes), file_path)
+    await _run_with_tools(update, prompt)
 
 
 async def _run_with_tools(update: Update, message_text: str) -> None:
@@ -471,6 +526,7 @@ def run_bot() -> None:
     app_tg.add_handler(CommandHandler("context", context_cmd))
     app_tg.add_handler(CommandHandler("compact", compact_cmd))
     app_tg.add_handler(CommandHandler("clear", clear))
+    app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Starting Telegram bot polling...")

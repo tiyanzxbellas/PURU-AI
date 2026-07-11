@@ -1,9 +1,32 @@
 from e2b import Sandbox
 from config import E2B_API_KEY
+from firebase import (
+    get_fb_version,
+    import_files_to_sandbox,
+    write_fb_file,
+    edit_fb_file,
+    delete_fb_file,
+)
 
 sandboxes: dict[int, Sandbox] = {}
+_sandbox_versions: dict[int, str] = {}  # chat_id -> last synced Firebase version
 
 BASH_TIMEOUT = 60_000  # 1 minute in ms
+
+
+def _sync_sandbox(sandbox, chat_id: int):
+    """Check Firebase version vs sandbox version.txt and sync if needed."""
+    fb_ver = get_fb_version(chat_id)
+    if fb_ver is None:
+        return  # No files in Firebase yet
+    try:
+        local_ver = sandbox.files.read("/home/user/version.txt").strip()
+    except Exception:
+        local_ver = None
+    if local_ver == fb_ver:
+        return  # Already in sync
+    import_files_to_sandbox(sandbox, chat_id)
+    _sandbox_versions[chat_id] = fb_ver
 
 
 def get_sandbox(user_id: int) -> Sandbox:
@@ -43,7 +66,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file in the sandbox. Creates parent directories automatically.",
+            "description": "Write content to a file in Firebase storage. Files are persisted and synced to sandbox when needed.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -58,7 +81,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Edit a file by replacing exact old text with new text. The old_text must match exactly (including whitespace and indentation).",
+            "description": "Edit a file in Firebase storage by replacing exact old text with new text. The old_text must match exactly (including whitespace and indentation).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -67,6 +90,20 @@ TOOLS = [
                     "new_text": {"type": "string", "description": "Replacement text"},
                 },
                 "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": "Delete a file from Firebase storage.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path to delete (e.g. /home/user/app.py)"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -112,7 +149,33 @@ def execute_tool(user_id: int, name: str, arguments: dict) -> tuple:
 
 
 def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) -> tuple:
+    # Firebase-based tools: write_file, edit_file, delete_file
+    if name == "write_file":
+        path = arguments.get("path", "")
+        content = arguments.get("content", "")
+        if not path:
+            return "FAIL: No file path provided. Specify a path like /home/user/file.py", None
+        if not content:
+            return f"FAIL: Empty content for {path}. Provide the file content to write.", None
+        return write_fb_file(user_id, path, content), None
+    if name == "edit_file":
+        path = arguments.get("path", "")
+        old_text = arguments.get("old_text", "")
+        new_text = arguments.get("new_text", "")
+        if not path:
+            return "FAIL: No file path provided.", None
+        if not old_text:
+            return "FAIL: old_text is empty. Provide the exact text to find.", None
+        return edit_fb_file(user_id, path, old_text, new_text), None
+    if name == "delete_file":
+        path = arguments.get("path", "")
+        if not path:
+            return "FAIL: No file path provided.", None
+        return delete_fb_file(user_id, path), None
+
+    # Sandbox-based tools: sync from Firebase first, then execute
     sandbox = get_sandbox(user_id)
+    _sync_sandbox(sandbox, user_id)
     try:
         if name == "bash":
             cmd = arguments.get("command", "")
@@ -136,39 +199,6 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             else:
                 feedback = "SUCCESS:\n"
             return feedback + output, None
-
-        elif name == "write_file":
-            path = arguments.get("path", "")
-            content = arguments.get("content", "")
-            if not path:
-                return "FAIL: No file path provided. Specify a path like /home/user/file.py", None
-            if not content:
-                return f"FAIL: Empty content for {path}. Provide the file content to write.", None
-            sandbox.files.write(path, content)
-            return f"SUCCESS: File written to {path} ({len(content)} chars, {len(content.splitlines())} lines)", None
-
-        elif name == "edit_file":
-            path = arguments.get("path", "")
-            old_text = arguments.get("old_text", "")
-            new_text = arguments.get("new_text", "")
-            if not path:
-                return "FAIL: No file path provided.", None
-            if not old_text:
-                return "FAIL: old_text is empty. Provide the exact text to find.", None
-            try:
-                content = sandbox.files.read(path)
-            except Exception:
-                return f"FAIL: Cannot read {path}. File may not exist. Use write_file to create it first.", None
-            if old_text not in content:
-                preview = content[:500] + "..." if len(content) > 500 else content
-                return (
-                    f"FAIL: old_text not found in {path}.\n"
-                    f"Make sure the text matches exactly (including spaces and indentation).\n"
-                    f"File preview:\n```\n{preview}\n```"
-                ), None
-            new_content = content.replace(old_text, new_text, 1)
-            sandbox.files.write(path, new_content)
-            return f"SUCCESS: File edited at {path} ({len(old_text)} chars replaced)", None
 
         elif name == "read_file":
             path = arguments.get("path", "")
@@ -212,7 +242,7 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             return f"Sending file: {filename}", (filename, file_bytes, caption)
 
         else:
-            return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, send_file.", None
+            return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, delete_file, send_file.", None
 
     except Exception as e:
         if _retry:
