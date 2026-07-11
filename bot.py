@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from flask import Flask, Response
 from telegram import Update, BotCommand, InputFile
+from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -249,10 +250,27 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Puru Code - Menu*\n\n"
         "/start - Welcome message\n"
         "/menu - Show this menu\n"
+        "/tools - Show available tools\n"
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n\n"
         "_Send any message to chat with AI._",
+        parse_mode="Markdown",
+        quote=True,
+    )
+
+
+async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(update.effective_user.id, update.effective_user.username, "tools")
+    await update.message.reply_text(
+        "*Available Tools*\n\n"
+        "The AI agent can use these tools in the sandbox:\n\n"
+        "• *bash* — Execute bash commands\n"
+        "• *write_file* — Write/create files\n"
+        "• *read_file* — Read file contents\n"
+        "• *edit_file* — Edit files (find & replace)\n"
+        "• *send_file* — Send files to chat\n\n"
+        "_Just describe what you want to build or debug, and the AI will use these tools automatically._",
         parse_mode="Markdown",
         quote=True,
     )
@@ -310,10 +328,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
 
     info = get_context_info(chat_id)
-    if info["tokens"] >= TOKEN_COMPACT_LIMIT:
-        logger.info("Auto-compact for chat %s (%s tokens)", chat_id, info["tokens"])
-        await asyncio.to_thread(compact_history, chat_id)
-        await update.message.reply_text("_Context auto-summarized to free tokens._", parse_mode="Markdown")
+    if info["tokens"] >= TOKEN_WARN_LIMIT:
+        logger.info("Token warning for chat %s (%s tokens)", chat_id, info["tokens"])
+        await update.message.reply_text(
+            f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
+            f"Run /compact to summarize and free up context.",
+            parse_mode="Markdown",
+            quote=True,
+        )
 
     if update.effective_chat.type in ("group", "supergroup"):
         bot_username = context.bot.username
@@ -329,7 +351,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             timeout=300,
         )
         response = ""
-        for is_final, chunk in generator:
+        for chunk, is_final in generator:
             response = chunk
         await update.message.reply_text(response, quote=True)
     except asyncio.TimeoutError:
@@ -340,11 +362,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    logger.info("Dashboard running on http://0.0.0.0:3000")
+RECONNECT_DELAY = 10  # seconds
 
+
+def run_bot() -> None:
     app_tg = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -354,6 +375,7 @@ if __name__ == "__main__":
 
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("menu", menu))
+    app_tg.add_handler(CommandHandler("tools", tools_cmd))
     app_tg.add_handler(CommandHandler("context", context_cmd))
     app_tg.add_handler(CommandHandler("compact", compact_cmd))
     app_tg.add_handler(CommandHandler("clear", clear))
@@ -361,3 +383,16 @@ if __name__ == "__main__":
 
     logger.info("Starting Telegram bot polling...")
     app_tg.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    logger.info("Dashboard running on http://0.0.0.0:3000")
+
+    while True:
+        try:
+            run_bot()
+        except (Conflict, TelegramError) as e:
+            logger.error("Bot disconnected: %s — reconnecting in %ds...", e, RECONNECT_DELAY)
+            time.sleep(RECONNECT_DELAY)

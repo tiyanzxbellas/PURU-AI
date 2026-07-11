@@ -18,5 +18,5 @@ Core rules:
 - Be brief and warm, use markdown formatting
 - Speak in the same language as the user"""
 
-TOKEN_WARN_LIMIT = 30000
+TOKEN_WARN_LIMIT = 20000
 TOKEN_COMPACT_LIMIT = 35000
