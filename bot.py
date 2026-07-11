@@ -356,9 +356,12 @@ async def _run_with_tools(update: Update, message_text: str) -> None:
 
         if final_response:
             try:
-                await status_msg.edit_text(final_response)
+                await status_msg.edit_text(final_response, parse_mode="Markdown")
             except Exception:
-                await status_msg.reply_text(final_response)
+                try:
+                    await status_msg.edit_text(final_response)
+                except Exception:
+                    pass
         else:
             try:
                 await status_msg.edit_text("No response from AI.")
