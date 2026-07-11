@@ -190,7 +190,7 @@ def chat_stream(user_id: int, message: str):
             full_reply = "".join(reasoning_parts)
             yield full_reply, False
         history.append({"role": "assistant", "content": full_reply})
-        yield "", True
+        yield full_reply, True
     except Exception as e:
         yield f"Error: {str(e)}", True
 
