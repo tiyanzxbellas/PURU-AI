@@ -173,11 +173,22 @@ def chat_stream(user_id: int, message: str):
             stream=True,
         )
         full_reply = ""
+        reasoning_parts = []
         for chunk in stream:
-            if chunk.choices[0].delta.content:
-                token = chunk.choices[0].delta.content
-                full_reply += token
-                yield token, False
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            # Collect reasoning tokens (some models return text here)
+            if hasattr(delta, "reasoning") and delta.reasoning:
+                reasoning_parts.append(delta.reasoning)
+            # Collect content tokens
+            if delta.content:
+                full_reply += delta.content
+                yield delta.content, False
+        # Fallback: if content is empty, use reasoning text
+        if not full_reply and reasoning_parts:
+            full_reply = "".join(reasoning_parts)
+            yield full_reply, False
         history.append({"role": "assistant", "content": full_reply})
         yield "", True
     except Exception as e:

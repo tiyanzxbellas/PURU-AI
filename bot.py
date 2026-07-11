@@ -250,6 +250,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Puru Code - Menu*\n\n"
         "/start - Welcome message\n"
         "/menu - Show this menu\n"
+        "/ai - Ask AI (use in groups)\n"
         "/tools - Show available tools\n"
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
@@ -319,6 +320,51 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("History cleared.", quote=True)
 
 
+async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /ai command — pass remaining text as prompt."""
+    if not update.message or not update.message.text:
+        return
+    user = update.effective_user
+    _track_message(user.id, user.username, "ai")
+    # Extract text after /ai
+    parts = update.message.text.split(maxsplit=1)
+    prompt = parts[1] if len(parts) > 1 else ""
+    if not prompt:
+        await update.message.reply_text("Usage: /ai <your question>", quote=True)
+        return
+
+    chat_id = update.effective_chat.id
+
+    info = get_context_info(chat_id)
+    if info["tokens"] >= TOKEN_WARN_LIMIT:
+        await update.message.reply_text(
+            f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
+            f"Run /compact to summarize and free up context.",
+            parse_mode="Markdown",
+            quote=True,
+        )
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        generator = await asyncio.wait_for(
+            asyncio.to_thread(chat_stream, chat_id, prompt),
+            timeout=300,
+        )
+        response = ""
+        for chunk, is_final in generator:
+            response = chunk
+        if response:
+            await update.message.reply_text(response, quote=True)
+        else:
+            await update.message.reply_text("No response from AI.", quote=True)
+    except asyncio.TimeoutError:
+        await update.message.reply_text("Timed out. Try a shorter message or /clear.", quote=True)
+    except Exception as e:
+        logger.exception("Error in ai_ask")
+        await update.message.reply_text(f"Error: {e}", quote=True)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -343,6 +389,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         text = text.replace(f"@{bot_username}", "").strip()
 
+    if not text:
+        return
+
     await update.message.chat.send_action("typing")
 
     try:
@@ -353,7 +402,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response = ""
         for chunk, is_final in generator:
             response = chunk
-        await update.message.reply_text(response, quote=True)
+        if response:
+            await update.message.reply_text(response, quote=True)
+        else:
+            await update.message.reply_text("No response from AI.", quote=True)
     except asyncio.TimeoutError:
         await update.message.reply_text("Timed out. Try a shorter message or /clear.", quote=True)
     except Exception as e:
@@ -375,6 +427,7 @@ def run_bot() -> None:
 
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("menu", menu))
+    app_tg.add_handler(CommandHandler("ai", ai_ask))
     app_tg.add_handler(CommandHandler("tools", tools_cmd))
     app_tg.add_handler(CommandHandler("context", context_cmd))
     app_tg.add_handler(CommandHandler("compact", compact_cmd))
