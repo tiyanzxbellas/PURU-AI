@@ -17,23 +17,23 @@ def _decode_path(encoded: str) -> str:
 
 def _fb_get(path: str):
     """GET from Firebase RTDB. Returns parsed JSON or None."""
-    try:
-        resp = httpx.get(f"{FB_RTDB_URL}/{path}.json", timeout=10)
-        if resp.status_code == 200 and resp.text.strip() not in ("null", ""):
-            return resp.json()
-    except Exception:
-        pass
+    resp = httpx.get(f"{FB_RTDB_URL}/{path}.json", timeout=10)
+    resp.raise_for_status()
+    if resp.status_code == 200 and resp.text.strip() not in ("null", ""):
+        return resp.json()
     return None
 
 
 def _fb_put(path: str, data):
     """PUT to Firebase RTDB."""
-    httpx.put(f"{FB_RTDB_URL}/{path}.json", json=data, timeout=10)
+    resp = httpx.put(f"{FB_RTDB_URL}/{path}.json", json=data, timeout=10)
+    resp.raise_for_status()
 
 
 def _fb_delete(path: str):
     """DELETE from Firebase RTDB."""
-    httpx.delete(f"{FB_RTDB_URL}/{path}.json", timeout=10)
+    resp = httpx.delete(f"{FB_RTDB_URL}/{path}.json", timeout=10)
+    resp.raise_for_status()
 
 
 def generate_version() -> str:
@@ -63,6 +63,23 @@ def get_all_fb_files(chat_id: int) -> dict[str, str]:
 def import_files_to_sandbox(sandbox, chat_id: int):
     """Import all files from Firebase RTDB into the sandbox."""
     files = get_all_fb_files(chat_id)
+    
+    # Collect all parent directories to create them
+    dirs_to_create = set()
+    for path in files.keys():
+        parts = path.rstrip("/").split("/")
+        if len(parts) > 2:  # has directories beyond root (e.g. /home/user/dir/file.py)
+            dir_path = "/".join(parts[:-1])
+            if dir_path:
+                dirs_to_create.add(dir_path)
+                
+    if dirs_to_create:
+        dirs_str = " ".join(f"'{d}'" for d in sorted(dirs_to_create, key=len))
+        try:
+            sandbox.commands.run(f"mkdir -p {dirs_str}")
+        except Exception:
+            pass
+
     for path, content in files.items():
         sandbox.files.write(path, content)
     ver = get_fb_version(chat_id)
