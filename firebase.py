@@ -91,6 +91,13 @@ def import_files_to_sandbox(sandbox, chat_id: int):
         sandbox.files.write("/home/user/version.txt", ver)
 
 
+def write_fb_file(chat_id: int, path: str, content: str) -> str:
+    """Write a file to Firebase RTDB."""
+    _fb_put(f"files/{chat_id}/{_encode_path(path)}", content)
+    update_file_version(chat_id)
+    return f"SUCCESS: File written to Firebase at {path} ({len(content)} chars)"
+
+
 def save_fb_binary_file(chat_id: int, path: str, file_bytes: bytes) -> str:
     """Save a binary file to Firebase RTDB (base64 encoded) with 2MB limit."""
     if len(file_bytes) > 2 * 1024 * 1024:
