@@ -446,6 +446,9 @@ async def _run_with_tools(update: Update, message_text: str) -> None:
             await status_msg.edit_text(f"Error: {e}")
         except Exception:
             pass
+    finally:
+        # Immediate sandbox termination after loop finishes
+        close_sandbox(chat_id)
 
 
 async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
