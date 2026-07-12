@@ -1,7 +1,11 @@
 import base64
 import uuid
+import json
 import httpx
-from config import FB_RTDB_URL
+from cryptography.fernet import Fernet
+from config import FB_RTDB_URL, FERNET_KEY
+
+cipher = Fernet(FERNET_KEY.encode())
 
 
 def _encode_path(path: str) -> str:
@@ -122,3 +126,31 @@ def delete_fb_file(chat_id: int, path: str) -> str:
     _fb_delete(f"files/{chat_id}/{_encode_path(path)}")
     update_file_version(chat_id)
     return f"SUCCESS: File {path} deleted from Firebase."
+
+
+def save_history(chat_id: int, history: list[dict]):
+    """Encrypt and save conversation history to Firebase."""
+    try:
+        data_str = json.dumps(history)
+        encrypted_data = cipher.encrypt(data_str.encode()).decode()
+        _fb_put(f"history/{chat_id}", encrypted_data)
+    except Exception as e:
+        print(f"Error saving history for {chat_id}: {e}")
+
+
+def get_history(chat_id: int) -> list[dict] | None:
+    """Retrieve and decrypt conversation history from Firebase."""
+    try:
+        encrypted_data = _fb_get(f"history/{chat_id}")
+        if not encrypted_data:
+            return None
+        decrypted_data = cipher.decrypt(encrypted_data.encode()).decode()
+        return json.loads(decrypted_data)
+    except Exception as e:
+        print(f"Error retrieving history for {chat_id}: {e}")
+        return None
+
+
+def clear_fb_history(chat_id: int):
+    """Delete history from Firebase."""
+    _fb_delete(f"history/{chat_id}")

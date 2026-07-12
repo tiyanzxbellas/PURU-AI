@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
 from sandbox import execute_tool, close_sandbox
+from firebase import save_history, get_history, clear_fb_history
 
 logger = logging.getLogger(__name__)
 
@@ -138,76 +139,99 @@ def compact_history(user_id: int) -> str:
             {"role": "user", "content": f"[Conversation Summary]\n{summary}"},
             {"role": "assistant", "content": "Context compacted. Continuing from summary."},
         ]
+        save_history(user_id, conversations[user_id])
         new_tokens = get_token_count(user_id)
         return f"Context compacted!\nBefore: {len(history)-1} messages\nAfter: 2 messages\nTokens: ~{new_tokens}"
     return "Compact failed: Gemini API unavailable after retries."
 
 
-def chat_with_tools(user_id: int, message: str, on_loop=None):
+def _ensure_history(user_id: int):
+    """Ensure history is loaded from Firebase or initialized."""
     if user_id not in conversations:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        system_with_date = f"{SYSTEM_PROMPT}\n\nCurrent date and time: {now} (UTC+0 / use local timezone if specified)."
-        conversations[user_id] = [{"role": "system", "content": system_with_date}]
+        db_history = get_history(user_id)
+        if db_history:
+            conversations[user_id] = db_history
+            logger.info(f"Loaded history for {user_id} from Firebase.")
+        else:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            system_with_date = f"{SYSTEM_PROMPT}\n\nCurrent date and time: {now} (UTC+0 / use local timezone if specified)."
+            conversations[user_id] = [{"role": "system", "content": system_with_date}]
+            save_history(user_id, conversations[user_id])
+            logger.info(f"Initialized new history for {user_id}.")
 
-    history = conversations[user_id]
-    history.append({"role": "user", "content": message})
 
-    if len(history) > MAX_HISTORY + 1:
-        history[:] = [history[0]] + history[-(MAX_HISTORY):]
+def chat_with_tools(user_id: int, message: str, on_loop=None):
+    _ensure_history(user_id)
+
+    global_history = conversations[user_id]
+    user_msg = {"role": "user", "content": message}
+    global_history.append(user_msg)
+
+    # Maintain MAX_HISTORY (including system prompt)
+    if len(global_history) > MAX_HISTORY + 1:
+        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
+    
+    save_history(user_id, global_history)
+
+    # Create a local copy for the tool-calling loop.
+    # This prevents intermediate tool calls/results from bloating the global history.
+    loop_history = list(global_history)
 
     loop_count = 0
     invalid_tool_count = 0
 
     while loop_count < MAX_LOOPS:
-        full_prompt = _format_history(history)
+        full_prompt = _format_history(loop_history)
         raw_response = _call_ai_api(full_prompt)
         
         if not raw_response:
-            yield "Error: Gemini API unavailable.", True, loop_count, []
+            err_msg = "Error: Gemini API unavailable."
+            global_history.append({"role": "assistant", "content": err_msg})
+            save_history(user_id, global_history)
+            yield err_msg, True, loop_count, []
             return
 
         reply, tool_call = parse_response(raw_response)
 
         if not tool_call:
-            history.append({"role": "assistant", "content": reply})
+            # Final response: append ONLY this to the permanent global history.
+            global_history.append({"role": "assistant", "content": reply})
+            save_history(user_id, global_history)
             yield reply, True, loop_count, []
             return
 
-        # Process tool call
-        history.append({"role": "assistant", "content": raw_response})
+        # Intermediate step: only append to loop_history.
+        loop_history.append({"role": "assistant", "content": raw_response})
         
         func_name = tool_call["name"]
         func_args = tool_call["arguments"]
 
         result_text, file_data = execute_tool(user_id, func_name, func_args)
         
-        # Check if tool call is invalid (starts with FAIL, Error or Tool error)
         is_invalid = any(result_text.startswith(prefix) for prefix in ["FAIL", "Error", "Tool error"])
         
         if is_invalid:
             invalid_tool_count += 1
             if invalid_tool_count > INVALID_TOOL_MAX_RETRIES:
                 error_msg = f"Error: Too many invalid tool calls ({INVALID_TOOL_MAX_RETRIES}). Stopping."
-                history.append({"role": "assistant", "content": error_msg})
+                global_history.append({"role": "assistant", "content": error_msg})
+                save_history(user_id, global_history)
                 yield error_msg, True, loop_count, []
                 return
             
-            # Exponential backoff for invalid tool call
             delay = 2 ** (invalid_tool_count - 1)
             logger.warning(f"Invalid tool call '{func_name}' (attempt {invalid_tool_count}). Backing off {delay}s...")
             time.sleep(delay)
             
-            # Tegur AI untuk self-improvement
             feedback = (
                 f"[SYSTEM ERROR] Your tool call to '{func_name}' was invalid:\n{result_text}\n\n"
                 "Please analyze why it failed (check parameters, file paths, or command syntax), "
                 "correct your mistake, and try again. Focus on self-improvement."
             )
-            history.append({"role": "tool", "content": feedback})
+            loop_history.append({"role": "tool", "content": feedback})
         else:
-            # Success, reset invalid counter
             invalid_tool_count = 0
-            history.append({"role": "tool", "content": result_text})
+            loop_history.append({"role": "tool", "content": result_text})
         
         loop_count += 1
         if on_loop:
@@ -217,32 +241,37 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
         yield f"Processing... ({loop_count}/{MAX_LOOPS})", False, loop_count, pending_files
 
     reply = "Error: Max tool call loops reached."
-    history.append({"role": "assistant", "content": reply})
+    global_history.append({"role": "assistant", "content": reply})
+    save_history(user_id, global_history)
     yield reply, True, loop_count, []
 
 
 def chat_stream(user_id: int, message: str):
     """Simulated streaming for the compact API."""
-    if user_id not in conversations:
-        conversations[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    _ensure_history(user_id)
 
-    history = conversations[user_id]
-    history.append({"role": "user", "content": message})
+    global_history = conversations[user_id]
+    global_history.append({"role": "user", "content": message})
 
-    if len(history) > MAX_HISTORY + 1:
-        history[:] = [history[0]] + history[-(MAX_HISTORY):]
+    if len(global_history) > MAX_HISTORY + 1:
+        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
+    
+    save_history(user_id, global_history)
 
-    full_prompt = _format_history(history)
+    full_prompt = _format_history(global_history)
     raw_response = _call_ai_api(full_prompt)
     
     if not raw_response:
-        yield "Error: Gemini API unavailable.", True
+        err_msg = "Error: Gemini API unavailable."
+        global_history.append({"role": "assistant", "content": err_msg})
+        save_history(user_id, global_history)
+        yield err_msg, True
         return
 
     reply, _ = parse_response(raw_response)
-    history.append({"role": "assistant", "content": reply})
+    global_history.append({"role": "assistant", "content": reply})
+    save_history(user_id, global_history)
     
-    # Simulate streaming by yielding chunks
     words = reply.split(" ")
     for i in range(len(words)):
         chunk = words[i] + (" " if i < len(words) - 1 else "")
@@ -253,26 +282,32 @@ def chat_stream(user_id: int, message: str):
 
 
 def chat(user_id: int, message: str) -> str:
-    if user_id not in conversations:
-        conversations[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    _ensure_history(user_id)
 
-    history = conversations[user_id]
-    history.append({"role": "user", "content": message})
+    global_history = conversations[user_id]
+    global_history.append({"role": "user", "content": message})
 
-    if len(history) > MAX_HISTORY + 1:
-        history[:] = [history[0]] + history[-(MAX_HISTORY):]
+    if len(global_history) > MAX_HISTORY + 1:
+        global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
+    
+    save_history(user_id, global_history)
 
-    full_prompt = _format_history(history)
+    full_prompt = _format_history(global_history)
     raw_response = _call_ai_api(full_prompt)
     
     if not raw_response:
-        return "Error: Gemini API unavailable."
+        err_msg = "Error: Gemini API unavailable."
+        global_history.append({"role": "assistant", "content": err_msg})
+        save_history(user_id, global_history)
+        return err_msg
 
     reply, _ = parse_response(raw_response)
-    history.append({"role": "assistant", "content": reply})
+    global_history.append({"role": "assistant", "content": reply})
+    save_history(user_id, global_history)
     return reply
 
 
 def clear_history(user_id: int) -> None:
     conversations.pop(user_id, None)
+    clear_fb_history(user_id)
     close_sandbox(user_id)
