@@ -48,11 +48,12 @@ The dashboard will be available at `http://localhost:3000`.
 
 ## Development Conventions
 
-### Coding Style
-- **Flat Structure:** All core logic resides in the root directory.
-- **Asynchronous Logic:** Uses `asyncio` for Telegram handlers and `asyncio.to_thread` for blocking AI/Sandbox calls.
-- **In-Memory State:** Conversation history and sandbox instances are stored in-memory (keyed by `chat_id`).
-- **Error Handling:** The bot uses a reconnection loop in `bot.py` to handle `Conflict` or `TelegramError`.
+### Bot Persona and Persistence
+- **Persona:** The bot ("Puru") is a soft-spoken, Gen Z-style coding buddy. It dislikes being called an "AI" and will react accordingly if referred to as one.
+- **Persistence:** 
+  - The E2B sandbox is temporary and will be wiped.
+  - `write_file` and `edit_file` tools automatically persist files to Firebase. No manual save is required.
+  - Use `send_file` to share files from the sandbox to the Telegram chat.
 
 ### Tool Execution
 The agent uses a "thought-action-observation" loop (up to 50 iterations). Tools are executed in an E2B sandbox, and results are fed back into the conversation history.

@@ -4,6 +4,7 @@ from firebase import (
     get_fb_version,
     import_files_to_sandbox,
     write_fb_file,
+    save_fb_binary_file,
     edit_fb_file,
     delete_fb_file,
 )
@@ -139,6 +140,20 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_file",
+            "description": "Save a file from the sandbox to Firebase storage permanently. Max size: 2MB.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the file in the sandbox to save"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 
@@ -173,6 +188,16 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
         if not path:
             return "FAIL: No file path provided.", None
         return delete_fb_file(user_id, path), None
+    if name == "save_file":
+        path = arguments.get("path", "")
+        if not path:
+            return "FAIL: No file path provided.", None
+        try:
+            sandbox = get_sandbox(user_id)
+            file_bytes = sandbox.files.read(path, format="bytes")
+        except Exception:
+            return f"FAIL: Cannot read {path} from sandbox to save. It might not exist.", None
+        return save_fb_binary_file(user_id, path, file_bytes), None
 
     # Sandbox-based tools: sync from Firebase first, then execute
     try:
@@ -243,7 +268,7 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             return f"Sending file: {filename}", (filename, file_bytes, caption)
 
         else:
-            return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, delete_file, send_file.", None
+            return f"Error: Unknown tool '{name}'. Available tools: bash, write_file, read_file, edit_file, delete_file, send_file, save_file.", None
 
     except Exception as e:
         err_str = str(e).lower()
