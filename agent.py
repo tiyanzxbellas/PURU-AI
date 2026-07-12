@@ -2,15 +2,19 @@ import json
 import re
 import time
 import httpx
+import logging
 from datetime import datetime
 from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
 from sandbox import execute_tool, close_sandbox
+
+logger = logging.getLogger(__name__)
 
 conversations: dict[int, list[dict]] = {}
 MAX_HISTORY = 30
 
 COMPACT_API_URL = "https://puruboy-api.vercel.app/api/ai/gemini-v2"
-COMPACT_MAX_RETRIES = 5
+AI_MAX_RETRIES = 5
+INVALID_TOOL_MAX_RETRIES = 5
 
 
 def _estimate_tokens(text: str) -> int:
@@ -35,9 +39,9 @@ def get_context_info(user_id: int) -> dict:
     }
 
 
-def _call_compact_api(prompt: str) -> str | None:
-    """Call Gemini compact API with exponential backoff. Returns answer or None on failure."""
-    for attempt in range(COMPACT_MAX_RETRIES):
+def _call_ai_api(prompt: str) -> str | None:
+    """Call Gemini AI API with exponential backoff. Returns answer or None on failure."""
+    for attempt in range(AI_MAX_RETRIES):
         try:
             resp = httpx.post(
                 COMPACT_API_URL,
@@ -48,10 +52,15 @@ def _call_compact_api(prompt: str) -> str | None:
             data = resp.json()
             if data.get("success") and data.get("result", {}).get("answer"):
                 return data["result"]["answer"]
-            return None
-        except Exception:
-            if attempt < COMPACT_MAX_RETRIES - 1:
-                time.sleep(2 ** attempt)
+            
+            logger.warning(f"AI API returned logical failure (attempt {attempt+1}): {data}")
+        except Exception as e:
+            logger.warning(f"AI API connection error (attempt {attempt+1}): {e}")
+        
+        if attempt < AI_MAX_RETRIES - 1:
+            delay = 2 ** attempt
+            logger.info(f"Retrying AI API in {delay}s...")
+            time.sleep(delay)
     return None
 
 
@@ -122,7 +131,7 @@ def compact_history(user_id: int) -> str:
         f"{full_text}"
     )
 
-    summary = _call_compact_api(summary_prompt)
+    summary = _call_ai_api(summary_prompt)
     if summary:
         conversations[user_id] = [
             history[0],
@@ -147,10 +156,11 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
         history[:] = [history[0]] + history[-(MAX_HISTORY):]
 
     loop_count = 0
+    invalid_tool_count = 0
 
     while loop_count < MAX_LOOPS:
         full_prompt = _format_history(history)
-        raw_response = _call_compact_api(full_prompt)
+        raw_response = _call_ai_api(full_prompt)
         
         if not raw_response:
             yield "Error: Gemini API unavailable.", True, loop_count, []
@@ -171,7 +181,33 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
 
         result_text, file_data = execute_tool(user_id, func_name, func_args)
         
-        history.append({"role": "tool", "content": result_text})
+        # Check if tool call is invalid (starts with FAIL or Error)
+        is_invalid = result_text.startswith("FAIL") or result_text.startswith("Error")
+        
+        if is_invalid:
+            invalid_tool_count += 1
+            if invalid_tool_count > INVALID_TOOL_MAX_RETRIES:
+                error_msg = f"Error: Too many invalid tool calls ({INVALID_TOOL_MAX_RETRIES}). Stopping."
+                history.append({"role": "assistant", "content": error_msg})
+                yield error_msg, True, loop_count, []
+                return
+            
+            # Exponential backoff for invalid tool call
+            delay = 2 ** (invalid_tool_count - 1)
+            logger.warning(f"Invalid tool call '{func_name}' (attempt {invalid_tool_count}). Backing off {delay}s...")
+            time.sleep(delay)
+            
+            # Tegur AI untuk self-improvement
+            feedback = (
+                f"[SYSTEM ERROR] Your tool call to '{func_name}' was invalid:\n{result_text}\n\n"
+                "Please analyze why it failed (check parameters, file paths, or command syntax), "
+                "correct your mistake, and try again. Focus on self-improvement."
+            )
+            history.append({"role": "tool", "content": feedback})
+        else:
+            # Success, reset invalid counter
+            invalid_tool_count = 0
+            history.append({"role": "tool", "content": result_text})
         
         loop_count += 1
         if on_loop:
@@ -197,7 +233,7 @@ def chat_stream(user_id: int, message: str):
         history[:] = [history[0]] + history[-(MAX_HISTORY):]
 
     full_prompt = _format_history(history)
-    raw_response = _call_compact_api(full_prompt)
+    raw_response = _call_ai_api(full_prompt)
     
     if not raw_response:
         yield "Error: Gemini API unavailable.", True
@@ -227,7 +263,7 @@ def chat(user_id: int, message: str) -> str:
         history[:] = [history[0]] + history[-(MAX_HISTORY):]
 
     full_prompt = _format_history(history)
-    raw_response = _call_compact_api(full_prompt)
+    raw_response = _call_ai_api(full_prompt)
     
     if not raw_response:
         return "Error: Gemini API unavailable."
