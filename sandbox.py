@@ -39,7 +39,7 @@ def get_sandbox(user_id: int) -> Sandbox:
 def close_sandbox(user_id: int) -> None:
     if user_id in sandboxes:
         try:
-            sandboxes[user_id].close()
+            sandboxes[user_id].kill()
         except Exception:
             pass
         del sandboxes[user_id]
@@ -175,9 +175,9 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
         return delete_fb_file(user_id, path), None
 
     # Sandbox-based tools: sync from Firebase first, then execute
-    sandbox = get_sandbox(user_id)
-    _sync_sandbox(sandbox, user_id)
     try:
+        sandbox = get_sandbox(user_id)
+        _sync_sandbox(sandbox, user_id)
         if name == "bash":
             cmd = arguments.get("command", "")
             if not cmd.strip():

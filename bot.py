@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from sandbox import get_sandbox
+from sandbox import get_sandbox, close_sandbox
 from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
 from agent import chat_with_tools, chat_stream, clear_history, get_context_info, compact_history
 
@@ -357,12 +357,24 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Upload to E2B sandbox
     file_path = f"/home/user/uploads/{file_name}"
-    try:
-        sandbox = get_sandbox(chat_id)
-        sandbox.files.write(file_path, bytes(file_bytes))
-    except Exception as e:
-        logger.warning("Failed to upload file to sandbox: %s", e)
-        await update.message.reply_text(f"Failed to save file to sandbox: {e}", quote=True)
+    success = False
+    for attempt in range(2):
+        try:
+            sandbox = get_sandbox(chat_id)
+            sandbox.files.write(file_path, bytes(file_bytes))
+            success = True
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            if "sandbox" in err_str and ("not found" in err_str or "timeout" in err_str or "does not exist" in err_str):
+                logger.info("Sandbox for chat %s died, recreating for file upload (attempt %d)", chat_id, attempt + 1)
+                close_sandbox(chat_id)
+                continue
+            logger.warning("Failed to upload file to sandbox: %s", e)
+            await update.message.reply_text(f"Failed to save file to sandbox: {e}", quote=True)
+            return
+    
+    if not success:
         return
 
     # Build prompt for the AI

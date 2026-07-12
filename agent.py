@@ -181,8 +181,8 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
 
         result_text, file_data = execute_tool(user_id, func_name, func_args)
         
-        # Check if tool call is invalid (starts with FAIL or Error)
-        is_invalid = result_text.startswith("FAIL") or result_text.startswith("Error")
+        # Check if tool call is invalid (starts with FAIL, Error or Tool error)
+        is_invalid = any(result_text.startswith(prefix) for prefix in ["FAIL", "Error", "Tool error"])
         
         if is_invalid:
             invalid_tool_count += 1
