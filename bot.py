@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 from sandbox import get_sandbox, close_sandbox
 from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
-from agent import chat_with_tools, chat_stream, clear_history, get_context_info, compact_history
+from agent import chat_with_tools, chat_stream, clear_history, clear_all_data, get_context_info, compact_history
 
 BOT_COMMANDS = [
     BotCommand("start", "Show welcome message"),
@@ -28,6 +28,7 @@ BOT_COMMANDS = [
     BotCommand("context", "Show token usage info"),
     BotCommand("compact", "Summarize & compress context"),
     BotCommand("clear", "Clear conversation history"),
+    BotCommand("clear_all", "Wipe ALL data: history, files, versions"),
 ]
 
 logging.basicConfig(
@@ -195,6 +196,7 @@ body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f17
 <div class="info-row"><span class="label">/context</span><span class="value">Token usage info</span></div>
 <div class="info-row"><span class="label">/compact</span><span class="value">Summarize &amp; compress context</span></div>
 <div class="info-row"><span class="label">/clear</span><span class="value">Clear conversation history</span></div>
+<div class="info-row"><span class="label">/clear_all</span><span class="value">Wipe everything: history, files, versions</span></div>
 </div>
 </div>
 </div>
@@ -256,7 +258,8 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/tools - Show available tools\n"
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
-        "/clear - Clear history\n\n"
+        "/clear - Clear history\n"
+        "/clear_all - Wipe everything (history, files, versions)\n\n"
         "_Send any message to chat with AI._\n"
         "_You can also send files — the AI will review them automatically._",
         parse_mode="Markdown",
@@ -273,7 +276,9 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• *write_file* — Write/create files\n"
         "• *read_file* — Read file contents\n"
         "• *edit_file* — Edit files (find & replace)\n"
-        "• *send_file* — Send files to chat\n\n"
+        "• *delete_file* — Delete files\n"
+        "• *send_file* — Send files to chat (auto-detects audio/video/image)\n"
+        "• *save_file* — Save file to Firebase permanently (max 2MB)\n\n"
         "_Just describe what you want to build or debug, and the AI will use these tools automatically._",
         parse_mode="Markdown",
         quote=True,
@@ -321,6 +326,13 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _track_message(update.effective_user.id, update.effective_user.username, "clear")
     clear_history(update.effective_chat.id)
     await update.message.reply_text("History cleared.", quote=True)
+
+
+async def clear_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Wipe ALL data for this chat: history, files, versions, sandbox — fresh start."""
+    _track_message(update.effective_user.id, update.effective_user.username, "clear_all")
+    clear_all_data(update.effective_chat.id)
+    await update.message.reply_text("Everything wiped clean. Starting fresh! 🧹", quote=True)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -414,11 +426,26 @@ async def _run_with_tools(update: Update, message_text: str) -> None:
             # Send any files returned by send_file tool
             for filename, file_bytes, caption in pending_files:
                 try:
-                    await update.message.reply_document(
-                        document=BytesIO(file_bytes),
-                        filename=filename,
-                        caption=caption or filename,
-                    )
+                    bio = BytesIO(file_bytes)
+                    bio.name = filename
+                    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+                    if ext in ("mp3", "wav", "ogg", "flac", "m4a", "aac", "wma"):
+                        await update.message.reply_audio(audio=bio, caption=caption or filename)
+                    elif ext in ("webm"):
+                        # webm can be audio-only (opus) or video; try audio first
+                        try:
+                            await update.message.reply_audio(audio=bio, caption=caption or filename)
+                        except Exception:
+                            bio.seek(0)
+                            await update.message.reply_video(video=bio, caption=caption or filename)
+                    elif ext in ("mp4", "mkv", "avi", "mov"):
+                        await update.message.reply_video(video=bio, caption=caption or filename)
+                    elif ext in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+                        await update.message.reply_photo(photo=bio, caption=caption or filename)
+                    else:
+                        await update.message.reply_document(
+                            document=bio, filename=filename, caption=caption or filename,
+                        )
                 except Exception as e:
                     logger.warning("Failed to send file %s: %s", filename, e)
 
@@ -541,6 +568,7 @@ def run_bot() -> None:
     app_tg.add_handler(CommandHandler("context", context_cmd))
     app_tg.add_handler(CommandHandler("compact", compact_cmd))
     app_tg.add_handler(CommandHandler("clear", clear))
+    app_tg.add_handler(CommandHandler("clear_all", clear_all))
     app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

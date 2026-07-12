@@ -197,7 +197,15 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             file_bytes = sandbox.files.read(path, format="bytes")
         except Exception:
             return f"FAIL: Cannot read {path} from sandbox to save. It might not exist.", None
-        return save_fb_binary_file(user_id, path, file_bytes), None
+        max_size = 2 * 1024 * 1024  # 2MB
+        if len(file_bytes) > max_size:
+            return f"FAIL: File too large ({len(file_bytes) / 1024 / 1024:.1f}MB). Max 2MB.", None
+        # Try decoding as text; if it fails, save as binary (base64)
+        try:
+            content = file_bytes.decode("utf-8")
+            return write_fb_file(user_id, path, content), None
+        except UnicodeDecodeError:
+            return save_fb_binary_file(user_id, path, file_bytes), None
 
     # Sandbox-based tools: sync from Firebase first, then execute
     try:

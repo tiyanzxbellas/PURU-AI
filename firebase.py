@@ -165,3 +165,10 @@ def get_history(chat_id: int) -> list[dict] | None:
 def clear_fb_history(chat_id: int):
     """Delete history from Firebase."""
     _fb_delete(f"history/{chat_id}")
+
+
+def clear_all_fb_data(chat_id: int):
+    """Delete all data (history, files, versions) for a chat from Firebase."""
+    _fb_delete(f"history/{chat_id}")
+    _fb_delete(f"files/{chat_id}")
+    _fb_delete(f"versions/{chat_id}")
