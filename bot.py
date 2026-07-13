@@ -17,7 +17,10 @@ from telegram.ext import (
     ContextTypes,
 )
 from sandbox import get_sandbox, close_sandbox
-from config import TELEGRAM_BOT_TOKEN, TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
+from config import TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
+import os
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8780968685:AAGGWgQKGcmegNFpq28JHyLRLL0vwbbk3-M")
 from agent import chat_with_tools, chat_stream, clear_history, clear_all_data, get_context_info, compact_history
 
 BOT_COMMANDS = [
