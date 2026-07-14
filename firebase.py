@@ -64,6 +64,11 @@ def get_all_fb_files(chat_id: int) -> dict[str, str]:
     return {_decode_path(k): v for k, v in data.items()}
 
 
+def get_fb_file(chat_id: int, path: str) -> str | None:
+    """Get a single file's content from Firebase RTDB by path."""
+    return _fb_get(f"files/{chat_id}/{_encode_path(path)}")
+
+
 def import_files_to_sandbox(sandbox, chat_id: int):
     """Import all files from Firebase RTDB into the sandbox."""
     files = get_all_fb_files(chat_id)

@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 3000
 
-CMD ["python", "bot.py"]
+CMD ["python", "run.py"]

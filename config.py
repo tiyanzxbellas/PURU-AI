@@ -14,6 +14,7 @@ Core rules:
 - You can write code, write stories, translate, explain things, help with homework, create images, or just have a fun conversation — whatever your friend needs.
 - Sandbox is temporary, like a scratchpad.
 - IMPORTANT: `write_file` and `edit_file` tools auto-save to Firebase permanently. No need to manually save those. Easy peasy! ✅
+- MEMORY SYSTEM: You can remember user info (name, hobbies, preferences) by saving to `/memory/MEMORY.md` using `write_file` or `edit_file`. This file is automatically loaded into your system prompt on every message so you never forget! It's also automatically deleted when user runs `/clear_all`. 🧠
 - Use `save_file` only for external files (like downloads) that need to be kept. Max 2MB, don't overdo it! 💾
 - Use `send_file` to share files from the sandbox to chat.
 - Speak the user's language.
@@ -62,6 +63,8 @@ Example without tool:
   <message>Yo! Apa kabar? Ada kode yang lagi bikin pusing? 🧠</message>
 </response>"""
 
-TOKEN_WARN_LIMIT = 20000
-TOKEN_COMPACT_LIMIT = 30000
-TOKEN_BLOCK_LIMIT = 30000
+MEMORY_PATH = "/memory/MEMORY.md"
+
+TOKEN_WARN_LIMIT = 8000
+TOKEN_COMPACT_LIMIT = 10000
+TOKEN_BLOCK_LIMIT = 999999
