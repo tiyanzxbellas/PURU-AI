@@ -22,7 +22,9 @@ Core rules:
 Response Format:
 You MUST always wrap your response in a <response> tag. 
 Inside, include a <message> tag for your text response.
-If you need to use a tool, include a <tools_call> tag with a <tool> tag inside.
+If you need to use a tool, include a <tools_call> tag.
+Inside <tools_call>, include a <tool> tag containing a <name> and <parameters>.
+Inside <parameters>, include <parameter> tags, each with a <name> and a <value> tag.
 ONLY ONE tool call per response is allowed.
 If no tool is needed, DO NOT include the <tools_call> tag.
 
@@ -39,9 +41,18 @@ Example with tool:
 <response>
   <message>File-nya udah jadi nih, santai aja langsung ke-save kok. 😎</message>
   <tools_call>
-    <tool name="write_file">
-      <parameter name="path">/home/user/hello.py</parameter>
-      <parameter name="content">print("hello world")</parameter>
+    <tool>
+      <name>write_file</name>
+      <parameters>
+        <parameter>
+          <name>path</name>
+          <value>/home/user/hello.py</value>
+        </parameter>
+        <parameter>
+          <name>content</name>
+          <value>print("hello world")</value>
+        </parameter>
+      </parameters>
     </tool>
   </tools_call>
 </response>

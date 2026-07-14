@@ -92,36 +92,43 @@ def _format_history(history: list[dict]) -> str:
 
 def parse_response(text: str):
     """Parse XML response to extract message and tool call."""
-    message = ""
+    # Parse tool call first
+    tool_match = re.search(r"<tool>(.*?)</tool>", text, re.DOTALL)
     tool_data = None
-    
-    # Try to find content within <message> tags
+    if tool_match:
+        tool_content = tool_match.group(1)
+        # Extract tool name
+        name_match = re.search(r"<name>(.*?)</name>", tool_content, re.DOTALL)
+        if name_match:
+            tool_name = name_match.group(1).strip()
+            params = {}
+            # Extract parameters
+            param_matches = re.finditer(r"<parameter>(.*?)</parameter>", tool_content, re.DOTALL)
+            for pm in param_matches:
+                p_content = pm.group(1)
+                p_name_match = re.search(r"<name>(.*?)</name>", p_content, re.DOTALL)
+                p_val_match = re.search(r"<value>(.*?)</value>", p_content, re.DOTALL)
+                if p_name_match and p_val_match:
+                    params[p_name_match.group(1).strip()] = p_val_match.group(1).strip()
+            tool_data = {"name": tool_name, "arguments": params}
+
+    # Extract message
+    message = ""
     msg_match = re.search(r"<message>(.*?)</message>", text, re.DOTALL)
     if msg_match:
         message = msg_match.group(1).strip()
     else:
-        # Fallback: if no <message> tags but <response> exists, take everything inside <response> 
-        # that is not <tools_call>
         resp_match = re.search(r"<response>(.*?)</response>", text, re.DOTALL)
         if resp_match:
             inner = resp_match.group(1)
             inner = re.sub(r"<tools_call>.*?</tools_call>", "", inner, flags=re.DOTALL)
             message = inner.strip()
         else:
-            # If no tags at all, just take the raw text
+            # Fallback: raw text minus tool call
             message = text.strip()
-            
-    # Parse tool call
-    tool_match = re.search(r"<tool name=\"(.*?)\">(.*?)</tool>", text, re.DOTALL)
-    if tool_match:
-        tool_name = tool_match.group(1)
-        params_text = tool_match.group(2)
-        params = {}
-        param_matches = re.finditer(r"<parameter name=\"(.*?)\">(.*?)</parameter>", params_text, re.DOTALL)
-        for pm in param_matches:
-            params[pm.group(1)] = pm.group(2).strip()
-        tool_data = {"name": tool_name, "arguments": params}
-        
+            if tool_match:
+                message = re.sub(r"<tool>.*?</tool>", "", message, flags=re.DOTALL).strip()
+
     return message, tool_data
 
 

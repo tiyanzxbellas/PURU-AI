@@ -233,7 +233,6 @@ def _execute_tool_inner(user_id: int, name: str, arguments: dict, _retry: bool) 
             else:
                 feedback = "SUCCESS:\n"
             return feedback + output, None
-
         elif name == "read_file":
             path = arguments.get("path", "")
             start_line = arguments.get("start_line", 1)
