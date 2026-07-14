@@ -66,12 +66,21 @@ def _call_ai_api(prompt: str) -> str | None:
 
 
 def _format_history(history: list[dict]) -> str:
+    # Find the latest user message to use as the current goal
+    current_goal = ""
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            current_goal = msg.get("content", "")
+            break
+
     formatted = ""
     for msg in history:
         role = msg["role"]
         content = msg.get("content", "")
         if role == "system":
             formatted += f"SYSTEM: {content}\n\n"
+            if current_goal:
+                formatted += f"CURRENT GOAL: {current_goal}\n\n"
         elif role == "user":
             formatted += f"USER: {content}\n\n"
         elif role == "assistant":
@@ -163,6 +172,12 @@ def _ensure_history(user_id: int):
 def chat_with_tools(user_id: int, message: str, on_loop=None):
     _ensure_history(user_id)
 
+    # Auto-compact if context is too high before adding new message
+    if get_token_count(user_id) >= TOKEN_BLOCK_LIMIT:
+        logger.info(f"Auto-compacting history for {user_id} (tokens: {get_token_count(user_id)})")
+        yield "🧹 Cleaning up memory (compacting)...", False, 0, []
+        compact_history(user_id)
+
     global_history = conversations[user_id]
     user_msg = {"role": "user", "content": message}
     global_history.append(user_msg)
@@ -173,9 +188,8 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
     
     save_history(user_id, global_history)
 
-    # Create a local copy for the tool-calling loop.
-    # This prevents intermediate tool calls/results from bloating the global history.
-    loop_history = list(global_history)
+    # Use global history for the tool-calling loop to preserve tool interaction history.
+    loop_history = global_history
 
     loop_count = 0
     invalid_tool_count = 0
@@ -200,8 +214,9 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
             yield reply, True, loop_count, []
             return
 
-        # Intermediate step: only append to loop_history.
+        # Intermediate step: append to history and persist.
         loop_history.append({"role": "assistant", "content": raw_response})
+        save_history(user_id, global_history)
         
         func_name = tool_call["name"]
         func_args = tool_call["arguments"]
@@ -229,11 +244,41 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
                 "correct your mistake, and try again. Focus on self-improvement."
             )
             loop_history.append({"role": "tool", "content": feedback})
+            
+            # Prune old tool interactions (max 12 pairs)
+            tool_indices = [i for i, m in enumerate(global_history) if m["role"] == "tool"]
+            if len(tool_indices) > 12:
+                idx = tool_indices[0]
+                if idx > 0 and global_history[idx-1]["role"] == "assistant":
+                    del global_history[idx]
+                    del global_history[idx-1]
+                else:
+                    del global_history[idx]
+            
+            save_history(user_id, global_history)
         else:
             invalid_tool_count = 0
             loop_history.append({"role": "tool", "content": result_text})
+            
+            # Prune old tool interactions (max 12 pairs)
+            tool_indices = [i for i, m in enumerate(global_history) if m["role"] == "tool"]
+            if len(tool_indices) > 12:
+                idx = tool_indices[0]
+                if idx > 0 and global_history[idx-1]["role"] == "assistant":
+                    del global_history[idx]
+                    del global_history[idx-1]
+                else:
+                    del global_history[idx]
+            
+            save_history(user_id, global_history)
         
         loop_count += 1
+        
+        # Maintain MAX_HISTORY inside the loop to prevent bloat
+        if len(global_history) > MAX_HISTORY + 1:
+            global_history[:] = [global_history[0]] + global_history[-(MAX_HISTORY):]
+            save_history(user_id, global_history)
+
         if on_loop:
             on_loop(loop_count)
 

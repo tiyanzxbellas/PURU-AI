@@ -262,7 +262,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n"
-        "/clear_all - Wipe everything (history, files, versions)\n\n"
+        "/clear\_all - Wipe everything (history, files, versions)\n\n"
         "_Send any message to chat with AI._\n"
         "_You can also send files — the AI will review them automatically._",
         parse_mode="Markdown",
@@ -276,12 +276,12 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Available Tools*\n\n"
         "The AI agent can use these tools in the sandbox:\n\n"
         "• *bash* — Execute bash commands\n"
-        "• *write_file* — Write/create files\n"
-        "• *read_file* — Read file contents\n"
-        "• *edit_file* — Edit files (find & replace)\n"
-        "• *delete_file* — Delete files\n"
-        "• *send_file* — Send files to chat (auto-detects audio/video/image)\n"
-        "• *save_file* — Save file to Firebase permanently (max 2MB)\n\n"
+        "• *write\_file* — Write/create files\n"
+        "• *read\_file* — Read file contents\n"
+        "• *edit\_file* — Edit files (find & replace)\n"
+        "• *delete\_file* — Delete files\n"
+        "• *send\_file* — Send files to chat (auto-detects audio/video/image)\n"
+        "• *save\_file* — Save file to Firebase permanently (max 2MB)\n\n"
         "_Just describe what you want to build or debug, and the AI will use these tools automatically._",
         parse_mode="Markdown",
         quote=True,
@@ -420,7 +420,7 @@ async def _run_with_tools(update: Update, message_text: str) -> None:
             if not is_done:
                 # Tool loop progress — edit the status message
                 try:
-                    await status_msg.edit_text(f"🔧 Processing... ({loop_count}/{MAX_LOOPS})")
+                    await status_msg.edit_text(text)
                 except Exception:
                     pass  # message not changed, ignore
             else:
@@ -502,13 +502,6 @@ async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             quote=True,
         )
         return
-    if info["tokens"] >= TOKEN_WARN_LIMIT:
-        await update.message.reply_text(
-            f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
-            f"Run /compact to summarize and free up context.",
-            parse_mode="Markdown",
-            quote=True,
-        )
 
     await _run_with_tools(update, prompt)
 
@@ -531,14 +524,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             quote=True,
         )
         return
-    if info["tokens"] >= TOKEN_WARN_LIMIT:
-        logger.info("Token warning for chat %s (%s tokens)", chat_id, info["tokens"])
-        await update.message.reply_text(
-            f"⚠️ *Token usage high:* `{info['tokens']:,}` tokens\n"
-            f"Run /compact to summarize and free up context.",
-            parse_mode="Markdown",
-            quote=True,
-        )
 
     if update.effective_chat.type in ("group", "supergroup"):
         bot_username = context.bot.username
