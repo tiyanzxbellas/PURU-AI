@@ -4,7 +4,7 @@ import time
 import httpx
 import logging
 from datetime import datetime
-from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MAX_LOOPS
+from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS
 from sandbox import execute_tool, close_sandbox
 from firebase import save_history, get_history, clear_fb_history, clear_all_fb_data
 
