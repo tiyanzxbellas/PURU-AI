@@ -15,7 +15,7 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
     if get_token_count(user_id) >= TOKEN_COMPACT_LIMIT:
         logger.info(f"Auto-compacting history for {user_id} (tokens: {get_token_count(user_id)})")
         yield "🧹 Cleaning up memory (compacting)...", False, 0, []
-        compact_history(user_id)
+        compact_history(user_id, message)
     global_history = conversations[user_id]
     global_history.append({"role": "user", "content": message})
     save_history(user_id, global_history)

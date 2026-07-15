@@ -2,16 +2,19 @@ from .history import conversations, get_token_count
 from .ai import _call_ai_api
 from firebase import save_history
 
-def compact_history(user_id: int) -> str:
+def compact_history(user_id: int, latest_message: str = "") -> str:
     if user_id not in conversations or len(conversations[user_id]) <= 1:
         return "No conversation to compact."
     history = conversations[user_id]
     user_msgs = [m for m in history[1:] if m["role"] == "user"]
     full_text = "\n".join(f"User: {m['content']}" for m in user_msgs)
+    if latest_message:
+        full_text += f"\n\n[LATEST USER MESSAGE - jangan hilangkan konteks ini]\nUser: {latest_message}"
     summary_prompt = (
-        "Ringkas percakapan berikut menjadi paragraf singkat yang mencakup "
-        "poin-poin penting, topik utama, dan tujuan user. "
+        "Ringkas percakapan berikut menjadi poin-poin penting, "
+        "topik utama, dan tujuan user. "
         "Jangan lewatkan detail teknis atau kode yang dibahas. "
+        "Pastikan konteks pesan terbaru user tetap terjaga. "
         "Gunakan format poin-poin:\n\n"
         f"{full_text}"
     )

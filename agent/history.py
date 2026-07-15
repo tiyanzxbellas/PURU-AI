@@ -13,7 +13,7 @@ def _estimate_tokens(text: str) -> int:
 def get_token_count(user_id: int) -> int:
     if user_id not in conversations:
         return 0
-    return sum(_estimate_tokens(m.get("content", "") or "") for m in conversations[user_id])
+    return sum(_estimate_tokens(m.get("content", "") or "") for m in conversations[user_id] if m["role"] != "system")
 
 def get_context_info(user_id: int) -> dict:
     if user_id not in conversations:
