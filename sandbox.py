@@ -12,8 +12,8 @@ from firebase import (
 sandboxes: dict[int, Sandbox] = {}
 _sandbox_versions: dict[int, str] = {}  # chat_id -> last synced Firebase version
 
-BASH_TIMEOUT = 120  # 2 minutes
-SANDBOX_TIMEOUT = 300  # 5 minutes
+BASH_TIMEOUT = 60  # 1 minute
+SANDBOX_TIMEOUT = 900  # 15 minutes
 
 
 def _sync_sandbox(sandbox, chat_id: int):
@@ -51,7 +51,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Execute a bash command in the sandbox. Timeout: 2 minutes.",
+            "description": "Execute a bash command in the sandbox. Timeout: 1 minute.",
             "parameters": {
                 "type": "object",
                 "properties": {
