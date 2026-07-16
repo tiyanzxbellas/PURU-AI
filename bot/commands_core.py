@@ -1,6 +1,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from .metrics import track_message
+from firebase import get_fb_file
+from config import MEMORY_PATH
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_message(update.effective_user.id, update.effective_user.username, "start")
@@ -21,7 +23,8 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n"
-        "/clear\_all - Wipe everything (history, files, versions)\n\n"
+        "/clear\_all - Wipe everything (history, files, versions)\n"
+        "/memory - View saved memory\n\n"
         "_Send any message to chat with AI._\n"
         "_You can also send files — the AI will review them automatically._",
         parse_mode="Markdown",
@@ -44,3 +47,12 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
         quote=True,
     )
+
+async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_message(update.effective_user.id, update.effective_user.username, "memory")
+    chat_id = update.effective_chat.id
+    content = get_fb_file(chat_id, MEMORY_PATH)
+    if content:
+        await update.message.reply_text(f"*🧠 Memory*\n\n{content}", parse_mode="Markdown", quote=True)
+    else:
+        await update.message.reply_text("Memori masih kosong. Belum ada data yang disimpan.", quote=True)
