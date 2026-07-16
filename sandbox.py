@@ -46,6 +46,8 @@ def close_sandbox(user_id: int) -> None:
         del sandboxes[user_id]
 
 
+REASON_DESC = "Wajib diisi — jelaskan kenapa kamu pakai tool ini dan apa yang kamu harapkan"
+
 TOOLS = [
     {
         "type": "function",
@@ -58,9 +60,10 @@ TOOLS = [
                     "command": {
                         "type": "string",
                         "description": "The bash command to execute",
-                    }
+                    },
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["command"],
+                "required": ["command", "reason"],
             },
         },
     },
@@ -74,8 +77,9 @@ TOOLS = [
                 "properties": {
                     "path": {"type": "string", "description": "Absolute file path (e.g. /home/user/app.py)"},
                     "content": {"type": "string", "description": "Full file content to write"},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path", "content"],
+                "required": ["path", "content", "reason"],
             },
         },
     },
@@ -90,8 +94,9 @@ TOOLS = [
                     "path": {"type": "string", "description": "Absolute file path"},
                     "old_text": {"type": "string", "description": "Exact text to find and replace (must match exactly)"},
                     "new_text": {"type": "string", "description": "Replacement text"},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path", "old_text", "new_text"],
+                "required": ["path", "old_text", "new_text", "reason"],
             },
         },
     },
@@ -104,8 +109,9 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute file path to delete (e.g. /home/user/app.py)"},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path"],
+                "required": ["path", "reason"],
             },
         },
     },
@@ -120,8 +126,9 @@ TOOLS = [
                     "path": {"type": "string", "description": "Absolute file path (e.g. /home/user/app.py)"},
                     "start_line": {"type": "integer", "description": "Starting line number (1-based, optional). Default: 1"},
                     "end_line": {"type": "integer", "description": "Ending line number (optional). If omitted, reads from start_line to end of file."},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path"],
+                "required": ["path", "reason"],
             },
         },
     },
@@ -135,8 +142,9 @@ TOOLS = [
                 "properties": {
                     "path": {"type": "string", "description": "Absolute path of the file in the sandbox to send"},
                     "caption": {"type": "string", "description": "Caption/description for the file (optional)"},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path"],
+                "required": ["path", "reason"],
             },
         },
     },
@@ -149,8 +157,9 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute path of the file in the sandbox to save"},
+                    "reason": {"type": "string", "description": REASON_DESC},
                 },
-                "required": ["path"],
+                "required": ["path", "reason"],
             },
         },
     },

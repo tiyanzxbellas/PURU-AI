@@ -41,6 +41,7 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
         save_history(user_id, global_history)
         func_name = tool_call["name"]
         func_args = tool_call["arguments"]
+        reason = func_args.pop("reason", "")
         result_text, file_data = execute_tool(user_id, func_name, func_args)
         if any(result_text.startswith(prefix) for prefix in ["FAIL", "Error", "Tool error"]):
             invalid_tool_count += 1
@@ -61,7 +62,8 @@ def chat_with_tools(user_id: int, message: str, on_loop=None):
             save_history(user_id, global_history)
         loop_count += 1
         if on_loop: on_loop(loop_count)
-        yield f"Processing... ({loop_count}/{MAX_LOOPS})", False, loop_count, [file_data] if file_data else []
+        reason_text = f": {reason}" if reason else ""
+        yield f"[{loop_count}/{MAX_LOOPS}] {func_name}{reason_text}", False, loop_count, [file_data] if file_data else []
     reply = "Error: Max tool call loops reached."
     global_history.append({"role": "assistant", "content": reply})
     save_history(user_id, global_history)
