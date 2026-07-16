@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from config import SYSTEM_PROMPT, TOKEN_WARN_LIMIT, MEMORY_PATH
+from config import SYSTEM_PROMPT, MEMORY_PATH
 from firebase import save_history, get_history, get_fb_file
 
 logger = logging.getLogger(__name__)
@@ -17,13 +17,11 @@ def get_token_count(user_id: int) -> int:
 
 def get_context_info(user_id: int) -> dict:
     if user_id not in conversations:
-        return {"tokens": 0, "messages": 0, "warn": False}
-    history = conversations[user_id]
+        return {"tokens": 0, "messages": 0}
     tokens = get_token_count(user_id)
     return {
         "tokens": tokens,
-        "messages": len([m for m in history if m["role"] != "system"]),
-        "warn": tokens >= TOKEN_WARN_LIMIT,
+        "messages": len([m for m in conversations[user_id] if m["role"] != "system"]),
     }
 
 def _ensure_history(user_id: int):

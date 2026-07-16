@@ -35,7 +35,14 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_message(update.effective_user.id, update.effective_user.username, "tools")
     await update.message.reply_text(
         "*Available Tools*\n\n"
-        "The AI agent can use these tools in the sandbox:\n\n"
+        "The AI uses a two-agent system:\n\n"
+        "*Puru (Orchestrator)* — file operations langsung\n"
+        "• *ls* — List files/directories\n"
+        "• *read\\_file* — Read file contents\n"
+        "• *write\\_file* — Write/create files\n"
+        "• *edit\\_file* — Edit files (find & replace)\n"
+        "• *delegate\\_task* — Delegate bash/search/download/code ke worker\n\n"
+        "*Worker (Executor)*\n"
         "• *bash* — Execute bash commands\n"
         "• *write\\_file* — Write/create files\n"
         "• *read\\_file* — Read file contents\n"
@@ -43,7 +50,7 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• *delete\\_file* — Delete files\n"
         "• *send\\_file* — Send files to chat (auto-detects audio/video/image)\n"
         "• *save\\_file* — Save file to Firebase permanently (max 2MB)\n\n"
-        "_Just describe what you want to build or debug, and the AI will use these tools automatically._",
+        "_Just describe what you want, the orchestrator delegates tasks to the worker._",
         parse_mode="Markdown",
         do_quote=True,
     )

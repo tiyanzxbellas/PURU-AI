@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from flask import Flask, Response
 from waitress import serve
-from config import TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
+from config import TOKEN_COMPACT_LIMIT, TOKEN_BLOCK_LIMIT, MAX_LOOPS, MODEL_NAME
 from .metrics import START_TIME, bot_metrics
 
 BOT_DISPLAY_NAME = "Puru Code AI"
@@ -118,7 +118,6 @@ body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f17
 <div class="info-row"><span class="label">CPU Cores</span><span class="value">{psutil.cpu_count()}</span></div>
 <div class="info-row"><span class="label">Current Time</span><span class="value">{now}</span></div>
 <div class="info-row"><span class="label">Max Loops</span><span class="value">{MAX_LOOPS}</span></div>
-<div class="info-row"><span class="label">Token Warn Limit</span><span class="value">{TOKEN_WARN_LIMIT:,}</span></div>
 <div class="info-row"><span class="label">Token Block Limit</span><span class="value">{TOKEN_BLOCK_LIMIT:,}</span></div>
 </div>
 </div>

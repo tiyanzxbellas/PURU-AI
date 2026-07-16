@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from .metrics import track_message
-from config import TOKEN_WARN_LIMIT, TOKEN_COMPACT_LIMIT, MODEL_NAME
+from config import TOKEN_COMPACT_LIMIT, MODEL_NAME
 from agent import get_context_info, compact_history, clear_history, clear_all_data
 
 async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -15,7 +15,6 @@ async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
     status = "Normal"
     if used >= TOKEN_COMPACT_LIMIT: status = "\u26a0\ufe0f Auto-compact"
-    elif used >= TOKEN_WARN_LIMIT: status = "\u23f3 Getting high"
     await update.message.reply_text(
         f"*Context Status*\n\nModel: `{MODEL_NAME}`\nTokens: `{used:,}` / `{limit:,}` (auto-compact)\n"
         f"[{bar}] {pct:.1f}%\nStatus: {status}\nMessages: `{info['messages']}`\n\n"

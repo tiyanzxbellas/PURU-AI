@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 
 from autogen_core.models import SystemMessage, UserMessage, AssistantMessage
@@ -16,6 +17,7 @@ from config import (
     AUTOGEN_MODEL_NAME,
     MAX_LOOPS,
     SYSTEM_PROMPT,
+    WORKER_SYSTEM_PROMPT,
     MEMORY_PATH,
     TOKEN_COMPACT_LIMIT,
 )
@@ -50,7 +52,7 @@ async def _populate_context_from_fb(agent: AssistantAgent, fb_history: list):
             await agent.model_context.add_message(AssistantMessage(content=content, source="puru"))
 
 
-def _make_tools(user_id: int, pending_files: list) -> list[FunctionTool]:
+def _make_worker_tools(user_id: int, pending_files: list) -> list[FunctionTool]:
     def bash_cmd(command: str, reason: str = "") -> str:
         result_text, file_data = execute_tool(user_id, "bash", {"command": command, "reason": reason})
         if file_data:
@@ -107,6 +109,22 @@ def _make_tools(user_id: int, pending_files: list) -> list[FunctionTool]:
     ]
 
 
+def _strip_fake_tool_output(text: str) -> str:
+    lines = text.split("\n")
+    result = []
+    skip = False
+    for line in lines:
+        if line.strip().startswith("⚙️ Tool executions:"):
+            skip = True
+            continue
+        if skip:
+            if re.match(r"^[ \t]*[✓⚠️]", line) or line.strip() == "":
+                continue
+            skip = False
+        result.append(line)
+    return "\n".join(result).strip()
+
+
 async def chat_with_autogen(user_id: int, message: str):
     _ensure_history(user_id)
     if get_token_count(user_id) >= TOKEN_COMPACT_LIMIT:
@@ -116,7 +134,6 @@ async def chat_with_autogen(user_id: int, message: str):
 
     fb_history = conversations[user_id]
     pending_files: list = []
-
     system_content = _make_system_content(user_id)
 
     model_client = OpenAIChatCompletionClient(
@@ -133,12 +150,83 @@ async def chat_with_autogen(user_id: int, message: str):
         },
     )
 
-    tools = _make_tools(user_id, pending_files)
+    worker_tools = _make_worker_tools(user_id, pending_files)
+
+    async def delegate_task(task: str, reason: str = "") -> str:
+        try:
+            worker = AssistantAgent(
+                name="worker",
+                model_client=model_client,
+                tools=worker_tools,
+                system_message=WORKER_SYSTEM_PROMPT,
+                reflect_on_tool_use=True,
+                max_tool_iterations=MAX_LOOPS,
+            )
+            result = ""
+            async for msg in worker.run_stream(task=task):
+                if isinstance(msg, TextMessage) and msg.source == "worker" and msg.content.strip():
+                    result = msg.content
+            return result or "(no result)"
+        except Exception as e:
+            logger.warning("Worker agent failed for %d: %s", user_id, e)
+            return f"Worker error: {e}"
+
+    def orchestrator_read_file(path: str, reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "read_file", {"path": path, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    def orchestrator_write_file(path: str, content: str, reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "write_file", {"path": path, "content": content, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    def orchestrator_edit_file(path: str, old_text: str, new_text: str, reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "edit_file", {"path": path, "old_text": old_text, "new_text": new_text, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    def orchestrator_ls(path: str = ".", reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "bash", {"command": f"ls -la {path}", "reason": reason or "list directory"})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    orchestrator_tools = [
+        FunctionTool(
+            orchestrator_ls,
+            description="List files and directories in the sandbox.",
+            name="ls",
+        ),
+        FunctionTool(
+            orchestrator_read_file,
+            description="Read a file from the sandbox with optional start and end line numbers.",
+            name="read_file",
+        ),
+        FunctionTool(
+            orchestrator_write_file,
+            description="Write content to a file in Firebase storage. Auto-saves to Firebase.",
+            name="write_file",
+        ),
+        FunctionTool(
+            orchestrator_edit_file,
+            description="Edit a file in Firebase storage by replacing exact old text with new text.",
+            name="edit_file",
+        ),
+        FunctionTool(
+            delegate_task,
+            description="Delegate a task to the worker agent. ONLY use this for bash commands, searching info, downloading media, or running code. For file operations (ls/read/write/edit), use the direct tools.",
+            name="delegate_task",
+        ),
+    ]
 
     agent = AssistantAgent(
         name="puru",
         model_client=model_client,
-        tools=tools,
+        tools=orchestrator_tools,
         system_message=system_content,
         reflect_on_tool_use=True,
         max_tool_iterations=MAX_LOOPS,
@@ -148,7 +236,6 @@ async def chat_with_autogen(user_id: int, message: str):
 
     final_response = ""
     loop_count = 0
-    tool_results = []
 
     try:
         for attempt in range(MAX_RETRIES):
@@ -166,9 +253,6 @@ async def chat_with_autogen(user_id: int, message: str):
                             reason = args.get("reason", "")[:60] if isinstance(args, dict) else str(args)[:60]
                             yield f"[{call.name}] {reason}", False, loop_count, []
                     elif isinstance(msg, ToolCallExecutionEvent):
-                        for result in msg.content:
-                            preview = (result.content or "")[:200].strip().replace("\n", " ")
-                            tool_results.append((result.name, preview, result.is_error))
                         loop_count += 1
                     elif isinstance(msg, ToolCallSummaryMessage):
                         loop_count += 1
@@ -187,7 +271,6 @@ async def chat_with_autogen(user_id: int, message: str):
                     await asyncio.sleep(delay)
                     final_response = ""
                     loop_count = 0
-                    tool_results = []
                 else:
                     final_response = "(no response after retries)"
 
@@ -199,7 +282,6 @@ async def chat_with_autogen(user_id: int, message: str):
                     await asyncio.sleep(delay)
                     final_response = ""
                     loop_count = 0
-                    tool_results = []
                 else:
                     raise
 
@@ -213,14 +295,8 @@ async def chat_with_autogen(user_id: int, message: str):
     finally:
         await model_client.close()
 
-    display_response = final_response
-    if tool_results:
-        parts = ["", "⚙️ Tool executions:"]
-        for name, preview, is_error in tool_results:
-            icon = "⚠️" if is_error else "✓"
-            parts.append(f"  {icon} {name} — {preview}")
-        final_response += "\n".join(parts)
+    display_response = _strip_fake_tool_output(final_response)
 
-    fb_history.append({"role": "assistant", "content": final_response})
+    fb_history.append({"role": "assistant", "content": display_response})
     save_history(user_id, fb_history)
     yield display_response, True, loop_count, pending_files
