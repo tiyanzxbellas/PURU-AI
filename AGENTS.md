@@ -7,43 +7,31 @@ python dev.py                # dev token from .env / env var (uses .venv/Scripts
 ```
 Dashboard at `http://0.0.0.0:3000`. No tests, no linter, no typecheck.
 
-## Architecture
-- `bot/`: PTB handlers + Flask dashboard. Entry: `bot/main.py:run_bot()` → polling.
-- `agent/autogen_engine.py`: **Primary engine** — AutoGen v0.7.5, model `"puru"` at `AUTOGEN_BASE_URL`. Async generator yielding `(text, is_done, loop_count, pending_files)`.
-- `agent/engine.py`: **Legacy** — old Gemini XML engine. Not used unless explicitly called.
-- `agent/ai.py`: Legacy Gemini API client. Used **only** by `compact.py` and old engine.
-- `sandbox.py`: e2b sandbox management (bash, file I/O). Auto-recreates on death.
-- `firebase.py`: Firebase RTDB — encrypted history, file storage, version system.
+## Two-Agent Architecture (`agent/autogen_engine.py`)
 
-## AutoGen Engine (`autogen_engine.py`)
-- `_populate_context_from_fb()`: Rebuilds `model_context` from `fb_history` each turn (no persistent state file).
-- Retry wrapper: 5 attempts, backoff [1,2,4,8,16]s. Resets `model_context` per attempt.
-- `OpenAIChatCompletionClient(max_retries=5)`. Endpoint handles `stream=false` internally.
-- `ToolCallRequestEvent.content`: `List[FunctionCall]` (`.name`, `.arguments`)
-- `ToolCallExecutionEvent.content`: `List[FunctionExecutionResult]` (`.name`, `.content`, `.is_error`)
-- `tool_results` collected during run → appended as `⚙️ Tool executions:` to assistant message in `fb_history`. User sees clean `display_response`.
-- Each assistant message in `fb_history` includes tool execution summary.
+Two `AssistantAgent`s share one `OpenAIChatCompletionClient` (`model="puru"` at `AUTOGEN_BASE_URL`).
+
+**Orchestrator (Puru)** — tools: `ls`, `read_file`, `write_file`, `edit_file`, `delegate_task`. Context loaded from Firebase history (clean — only user + final answer). For file ops use tools directly; for bash/search/download/code, calls `delegate_task`.
+
+**Worker (ephemeral)** — spawned fresh per `delegate_task` call with **empty context** (only system prompt + task). Tools: `bash`, `write_file`, `read_file`, `edit_file`, `delete_file`, `send_file`, `save_file`. Discarded after returning result. Never saved to history.
+
+Main loop yields `(text, is_done, loop_count, pending_files)`. Retry wrapper: 5 attempts, backoff [1,2,4,8,16]s. Resets `model_context` per attempt.
 
 ## Conversation History
-- Single source of truth: `fb_history` in Firebase (encrypted JSON at `history/{chat_id}`).
+- Single source: encrypted JSON at Firebase `history/{chat_id}`.
 - Loaded into `conversations[user_id]` dict on startup.
-- Every turn: user msg appended → AutoGen processes → assistant msg (with tool summary) appended → `save_history()`.
-- `/clear_all` wipes `history/`, `files/`, `versions/` from Firebase.
+- **Only clean user + assistant messages saved** — no tool execution artifacts in Firebase.
+- `/clear_all` wipes `history/`, `files/`, `versions/`.
 
 ## Auto-Compact
-- Trigger: `get_token_count() >= TOKEN_COMPACT_LIMIT` (10k).
+- Trigger: `get_token_count() >= TOKEN_COMPACT_LIMIT` (5k).
 - Uses **legacy Gemini API** (`agent/ai.py:_call_ai_api`) — will fail if Gemini is down.
-- `compact_history()`: Formats all non-system messages (user + assistant with tool info) as dialog → sends to Gemini → replaces history with summary + dummy assistant msg.
-
-## Memory
-- Path: `/memory/MEMORY.md` in Firebase (defined in `config.py`).
-- Injected into system prompt on every message.
-- AI saves via `write_file`/`edit_file` (tool context: "Memory system").
-- Wiped by `/clear_all`.
+- Formats non-system messages as dialog → Gemini summary → replaces history with 2 messages.
 
 ## Key Gotchas
 - `do_quote=True` (PTB v22.8), not `quote=True`.
 - `agent/engine.py`, `agent/ai.py`, `agent/formatter.py` are **legacy** — do not touch unless specifically asked.
-- No lockfile (`requirements.txt` only). Actual installed versions may differ (e.g., `autogen-agentchat==0.7.5` vs `>=0.5.0` in reqs).
-- `get_context_info` `messages` field counts **all** non-system messages (user + assistant), not just user.
-- Token estimation is `len(content) // 4` — rough approximation.
+- No lockfile (`requirements.txt` only). Actual installed versions may differ.
+- `get_context_info` `messages` field counts all non-system messages.
+- Token estimation: `len(content) // 4`.
+- `sandbox.py`'s `TOOLS` list (OpenAI JSON schemas) is **legacy** — not used by AutoGen engine.
