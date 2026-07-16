@@ -10,5 +10,6 @@ os.environ["TELEGRAM_BOT_TOKEN"] = "8535593654:AAEaEddzmyzVxkwWPy1l8JiHT7UfPZ-pO
 os.environ["DEV_MODE"] = "true"
 
 print("Starting run.py with development token...")
-# Use sys.executable to ensure the same python interpreter is used
-subprocess.run([sys.executable, "run.py"])
+# Use .venv Python to ensure all dependencies are available
+venv_python = os.path.join(os.path.dirname(__file__), ".venv", "Scripts", "python.exe")
+subprocess.run([venv_python, "run.py"])

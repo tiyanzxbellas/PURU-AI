@@ -15,7 +15,7 @@ async def ai_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = update.message.text.split(maxsplit=1)
     prompt = parts[1] if len(parts) > 1 else ""
     if not prompt:
-        await update.message.reply_text("Usage: /ai <your question>", quote=True)
+        await update.message.reply_text("Usage: /ai <your question>", do_quote=True)
         return
     await run_with_tools(update, prompt)
 
@@ -32,7 +32,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         file_bytes = await tg_file.download_as_bytearray()
     except Exception as e:
         logger.warning("Failed to download file: %s", e)
-        await update.message.reply_text(f"Failed to download file: {e}", quote=True)
+        await update.message.reply_text(f"Failed to download file: {e}", do_quote=True)
         return
     file_path = f"/home/user/uploads/{file_name}"
     success = False
@@ -47,7 +47,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 close_sandbox(chat_id)
                 continue
             logger.warning("Failed to upload file: %s", e)
-            await update.message.reply_text(f"Failed to save file: {e}", quote=True)
+            await update.message.reply_text(f"Failed to save file: {e}", do_quote=True)
             return
     if not success: return
     prompt = f"User has sent a file at `{file_path}`\n" + (f"Caption: {caption}\n" if caption else "") + f"Size: {len(file_bytes):,} bytes, type: {doc.mime_type or 'unknown'}\n" + "Please review it."

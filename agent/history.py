@@ -22,7 +22,7 @@ def get_context_info(user_id: int) -> dict:
     tokens = get_token_count(user_id)
     return {
         "tokens": tokens,
-        "messages": len([m for m in history if m["role"] == "user"]),
+        "messages": len([m for m in history if m["role"] != "system"]),
         "warn": tokens >= TOKEN_WARN_LIMIT,
     }
 

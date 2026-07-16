@@ -9,7 +9,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Puru Code - AI Coding Agent\n\n"
         "Send me any coding question or paste code to debug.",
-        quote=True,
+        do_quote=True,
     )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -23,12 +23,12 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n"
-        "/clear\_all - Wipe everything (history, files, versions)\n"
+        "/clear\\_all - Wipe everything (history, files, versions)\n"
         "/memory - View saved memory\n\n"
         "_Send any message to chat with AI._\n"
         "_You can also send files — the AI will review them automatically._",
         parse_mode="Markdown",
-        quote=True,
+        do_quote=True,
     )
 
 async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -37,15 +37,15 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Available Tools*\n\n"
         "The AI agent can use these tools in the sandbox:\n\n"
         "• *bash* — Execute bash commands\n"
-        "• *write\_file* — Write/create files\n"
-        "• *read\_file* — Read file contents\n"
-        "• *edit\_file* — Edit files (find & replace)\n"
-        "• *delete\_file* — Delete files\n"
-        "• *send\_file* — Send files to chat (auto-detects audio/video/image)\n"
-        "• *save\_file* — Save file to Firebase permanently (max 2MB)\n\n"
+        "• *write\\_file* — Write/create files\n"
+        "• *read\\_file* — Read file contents\n"
+        "• *edit\\_file* — Edit files (find & replace)\n"
+        "• *delete\\_file* — Delete files\n"
+        "• *send\\_file* — Send files to chat (auto-detects audio/video/image)\n"
+        "• *save\\_file* — Save file to Firebase permanently (max 2MB)\n\n"
         "_Just describe what you want to build or debug, and the AI will use these tools automatically._",
         parse_mode="Markdown",
-        quote=True,
+        do_quote=True,
     )
 
 async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,6 +53,6 @@ async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = update.effective_chat.id
     content = get_fb_file(chat_id, MEMORY_PATH)
     if content:
-        await update.message.reply_text(f"*🧠 Memory*\n\n{content}", parse_mode="Markdown", quote=True)
+        await update.message.reply_text(f"*🧠 Memory*\n\n{content}", parse_mode="Markdown", do_quote=True)
     else:
-        await update.message.reply_text("Memori masih kosong. Belum ada data yang disimpan.", quote=True)
+        await update.message.reply_text("Memori masih kosong. Belum ada data yang disimpan.", do_quote=True)

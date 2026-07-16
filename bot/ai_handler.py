@@ -3,17 +3,16 @@ import logging
 from io import BytesIO
 from telegram import Update
 from sandbox import close_sandbox
-from agent import chat_with_tools
+from agent.autogen_engine import chat_with_autogen
 
 logger = logging.getLogger(__name__)
 
 async def run_with_tools(update: Update, message_text: str) -> None:
     chat_id = update.effective_chat.id
-    status_msg = await update.message.reply_text("🤖 Thinking...", quote=True)
+    status_msg = await update.message.reply_text("Thinking...", do_quote=True)
     try:
-        generator = await asyncio.wait_for(asyncio.to_thread(chat_with_tools, chat_id, message_text), timeout=600)
         final_response = ""
-        for text, is_done, loop_count, pending_files in generator:
+        async for text, is_done, loop_count, pending_files in chat_with_autogen(chat_id, message_text):
             if not is_done:
                 try: await status_msg.edit_text(text)
                 except Exception: pass

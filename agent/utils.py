@@ -1,6 +1,7 @@
 from .history import conversations
 from firebase import clear_fb_history, clear_all_fb_data
 from sandbox import close_sandbox
+from config import MEMORY_PATH
 
 def clear_history(user_id: int) -> None:
     conversations.pop(user_id, None)

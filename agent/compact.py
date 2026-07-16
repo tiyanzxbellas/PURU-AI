@@ -6,8 +6,11 @@ def compact_history(user_id: int, latest_message: str = "") -> str:
     if user_id not in conversations or len(conversations[user_id]) <= 1:
         return "No conversation to compact."
     history = conversations[user_id]
-    user_msgs = [m for m in history[1:] if m["role"] == "user"]
-    full_text = "\n".join(f"User: {m['content']}" for m in user_msgs)
+    dialog = []
+    for m in history[1:]:
+        role = "User" if m["role"] == "user" else "Assistant"
+        dialog.append(f"{role}: {m['content']}")
+    full_text = "\n\n".join(dialog)
     if latest_message:
         full_text += f"\n\n[LATEST USER MESSAGE - jangan hilangkan konteks ini]\nUser: {latest_message}"
     summary_prompt = (
