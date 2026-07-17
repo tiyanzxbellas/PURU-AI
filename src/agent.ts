@@ -4,6 +4,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
 import { z } from 'zod';
 import * as vfs from './vfs.js';
+import * as e2b from './e2b.js';
 
 const provider = createOpenAI({
   baseURL: config.ai.baseURL,
@@ -103,6 +104,11 @@ You have the following tools available:
 11. crawl — Crawl a website URL and extract its text content for summarization
 12. get_current_time — Get the current date and time for a given timezone
 13. calculate_math — Evaluate a mathematical expression
+14. e2b_sandbox_create — Create a new E2B cloud sandbox (Linux VM with internet) for running code
+15. e2b_run_code — Execute Python or JavaScript code inside the E2B sandbox. Reads code from a VFS file path.
+16. e2b_install_package — Install a package (pip or npm) into the E2B sandbox environment
+17. e2b_send_file — Read a file from the E2B sandbox filesystem and send it to the Telegram chat
+18. e2b_sandbox_kill — Terminate and clean up the active E2B sandbox
 
 === USER MEMORY SYSTEM ===
 You have a persistent memory file at /memory/MEMORY.md in the user's virtual file system.
@@ -345,6 +351,66 @@ Use the appropriate tools when needed. Be friendly, knowledgeable, and concise.`
         } catch {
           return { expression, error: 'Ekspresi matematika tidak valid' };
         }
+      },
+    }),
+
+    e2b_sandbox_create: tool({
+      description: 'Membuat dan menginisialisasi instans sandbox cloud E2B baru yang terisolasi dengan akses Linux dan internet. Setiap chat hanya bisa memiliki satu sandbox aktif.',
+      inputSchema: z.object({}),
+      execute: async () => {
+        return await e2b.createSandbox(requestChatId);
+      },
+    }),
+
+    e2b_run_code: tool({
+      description: 'Membaca file kode dari virtual file system (VFS) lalu mengeksekusinya di dalam sandbox E2B. Setelah kode dijalankan, hasil output (stdout/stderr) akan dikembalikan.',
+      inputSchema: z.object({
+        path: z.string().describe('Jalur lengkap file kode di VFS yang ingin dijalankan (contoh: "scripts/analisis.py").'),
+        language: z.enum(['python', 'javascript']).optional().describe('Bahasa pemrograman (default: python).'),
+      }),
+      execute: async ({ path, language }) => {
+        const code = await vfs.readFile(requestChatId, path);
+        if (code === null) return { error: 'File tidak ditemukan di VFS', path };
+        return await e2b.runCodeInSandbox(requestChatId, code, language || 'python');
+      },
+    }),
+
+    e2b_install_package: tool({
+      description: 'Memasang package ke dalam sandbox E2B. Mendukung pip (Python) dan npm (Node.js).',
+      inputSchema: z.object({
+        package_name: z.string().describe('Nama package yang ingin diinstal (contoh: "pandas", "matplotlib", "axios", "express").'),
+        manager: z.enum(['pip', 'npm']).optional().describe('Package manager: "pip" untuk Python (default), "npm" untuk Node.js.'),
+      }),
+      execute: async ({ package_name, manager }) => {
+        return await e2b.installPackageInSandbox(requestChatId, package_name, manager || 'pip');
+      },
+    }),
+
+    e2b_send_file: tool({
+      description: 'Mengambil file hasil pemrosesan dari sandbox E2B lalu mengirimkannya langsung ke chat Telegram pengguna.',
+      inputSchema: z.object({
+        path: z.string().describe('Jalur file di dalam sandbox E2B yang ingin dikirim (contoh: "/tmp/chart.png" atau "/home/user/output.csv").'),
+        caption: z.string().optional().describe('Deskripsi atau keterangan singkat yang menyertai file saat dikirim ke Telegram.'),
+      }),
+      execute: async ({ path, caption }) => {
+        const { content, error } = await e2b.readFileFromSandbox(requestChatId, path);
+        if (error) return { success: false, error };
+        if (!content || content.length === 0) return { success: false, error: 'File kosong atau tidak ditemukan' };
+
+        if (requestSendBuffer) {
+          const filename = path.split('/').pop() || 'sandbox_file';
+          await requestSendBuffer(content, filename, caption);
+          return { success: true, message: 'File berhasil dikirim ke Telegram' };
+        }
+        return { success: false, error: 'Tidak dapat mengirim file ke chat' };
+      },
+    }),
+
+    e2b_sandbox_kill: tool({
+      description: 'Menutup dan menghapus instans sandbox E2B secara permanen untuk membersihkan resource setelah semua proses eksekusi selesai.',
+      inputSchema: z.object({}),
+      execute: async () => {
+        return e2b.killSandbox(requestChatId);
       },
     }),
   },

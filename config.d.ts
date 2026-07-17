@@ -7,6 +7,7 @@ export interface AiConfig {
 export interface Config {
   telegramBotToken: string;
   ai: AiConfig;
+  e2bApiKey: string;
 }
 
 declare const config: Config;
