@@ -119,6 +119,92 @@ export function createBot() {
 
   const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset'];
 
+  bot.on('message:document', async (ctx: Context) => {
+    const userId = ctx.from!.id;
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+    if (isGroup) return;
+
+    const doc = ctx.message!.document!;
+    const caption = ctx.message!.caption || '';
+    const chatId = ctx.chat!.id;
+
+    const trimmed = caption.trim();
+    let vfsPath: string;
+    let prompt: string;
+
+    const firstSpace = trimmed.indexOf(' ');
+    if (firstSpace > 0 && trimmed.startsWith('/')) {
+      vfsPath = trimmed.slice(0, firstSpace).replace(/^\//, '');
+      prompt = trimmed.slice(firstSpace + 1).trim();
+    } else if (trimmed.startsWith('/')) {
+      vfsPath = trimmed.slice(1);
+      prompt = '';
+    } else {
+      vfsPath = doc.file_name || 'uploaded_file';
+      prompt = trimmed;
+    }
+
+    vfsPath = vfsPath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
+
+    const file = await ctx.getFile();
+    if (!file.file_path) {
+      await safeReply(ctx, 'Gagal mengunduh file.');
+      return;
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${config.telegramBotToken}/${file.file_path}`;
+    const fileRes = await fetch(fileUrl);
+    const arrayBuffer = await fileRes.arrayBuffer();
+    const fileContent = Buffer.from(arrayBuffer).toString('utf-8');
+
+    await vfs.writeFile(userId, vfsPath, fileContent);
+
+    const saveMsg = await ctx.reply(`📁 Tersimpan di \`/${vfsPath}\`\n\n🤔 PURU-AI sedang memproses...`, {
+      reply_to_message_id: ctx.msg?.message_id,
+      parse_mode: 'Markdown',
+    });
+
+    if (!chatHistories.has(userId)) {
+      chatHistories.set(userId, []);
+    }
+    const history = chatHistories.get(userId)!;
+
+    try {
+      const filePreview = fileContent.length > 4000 ? fileContent.slice(0, 4000) + '\n...(truncated)' : fileContent;
+      const injectedPrompt = prompt
+        ? `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\`\n\n${prompt}`
+        : `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\``;
+
+      const { text, responseMessages } = await processMessage(injectedPrompt, history, {
+        chatId: userId,
+        sendFile: async (content, filename, caption) => {
+          await ctx.replyWithDocument(
+            new InputFile(Buffer.from(content, 'utf-8'), filename),
+            { caption: caption || filename },
+          );
+        },
+        sendBuffer: async (buffer, filename, caption) => {
+          await ctx.replyWithDocument(
+            new InputFile(buffer, filename),
+            { caption: caption || filename },
+          );
+        },
+      });
+
+      history.push({ role: 'user', content: injectedPrompt } as ModelMessage);
+      history.push(...responseMessages);
+
+      if (history.length > 40) {
+        history.splice(0, history.length - 40);
+      }
+
+      await safeEdit(ctx, chatId, saveMsg.message_id, text);
+    } catch (error) {
+      console.error('Error processing file message:', error);
+      await safeEdit(ctx, chatId, saveMsg.message_id, 'Maaf, terjadi kesalahan saat memproses file.');
+    }
+  });
+
   bot.on('message:text', async (ctx: Context) => {
     const chatId = ctx.chat!.id;
     const userId = ctx.from!.id;

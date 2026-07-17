@@ -121,6 +121,27 @@ export async function deleteAll(chatId: number): Promise<void> {
   await fbDelete(`fs/${chatId}`);
 }
 
+export async function moveFile(chatId: number, sourcePath: string, destPath: string): Promise<{ success: boolean; error?: string }> {
+  const src = normalizePath(sourcePath);
+  const dst = normalizePath(destPath);
+  if (!src || !dst) return { success: false, error: 'Invalid path' };
+
+  const content = await readFile(chatId, src);
+  if (content === null) return { success: false, error: 'Source file not found' };
+
+  const destExists = await readFile(chatId, dst);
+  if (destExists !== null) return { success: false, error: 'Destination already exists' };
+
+  await writeFile(chatId, dst, content);
+  const deleted = await deleteFile(chatId, src);
+  if (!deleted) {
+    await deleteFile(chatId, dst);
+    return { success: false, error: 'Failed to remove source after copy' };
+  }
+
+  return { success: true };
+}
+
 export async function editFile(chatId: number, path: string, oldString: string, newString: string): Promise<{ success: boolean; error?: string }> {
   const content = await readFile(chatId, path);
   if (content === null) return { success: false, error: 'File not found' };

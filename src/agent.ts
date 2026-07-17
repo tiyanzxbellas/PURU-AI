@@ -95,13 +95,14 @@ You have the following tools available:
 3. write_file — Create or overwrite a file (virtual file system, user-specific)
 4. edit_file — Find and replace text in a file (virtual file system, user-specific)
 5. delete_file — Delete a file (virtual file system, user-specific)
-6. send_file — Read a file from the virtual file system and send it directly to the user's Telegram chat
-7. soundcloud_search — Search for tracks on SoundCloud
-8. soundcloud_downloader — Download a SoundCloud track by URL and send the audio to the user
-9. search_web — Search the web using Yahoo search
-10. crawl — Crawl a website URL and extract its text content for summarization
-11. get_current_time — Get the current date and time for a given timezone
-12. calculate_math — Evaluate a mathematical expression
+6. move_file — Move or rename a file in the virtual file system
+7. send_file — Read a file from the virtual file system and send it directly to the user's Telegram chat
+8. soundcloud_search — Search for tracks on SoundCloud
+9. soundcloud_downloader — Download a SoundCloud track by URL and send the audio to the user
+10. search_web — Search the web using Yahoo search
+11. crawl — Crawl a website URL and extract its text content for summarization
+12. get_current_time — Get the current date and time for a given timezone
+13. calculate_math — Evaluate a mathematical expression
 
 === USER MEMORY SYSTEM ===
 You have a persistent memory file at /memory/MEMORY.md in the user's virtual file system.
@@ -173,6 +174,17 @@ Use the appropriate tools when needed. Be friendly, knowledgeable, and concise.`
         const deleted = await vfs.deleteFile(requestChatId, path);
         if (!deleted) return { success: false, error: 'File not found' };
         return { success: true };
+      },
+    }),
+
+    move_file: tool({
+      description: 'Memindahkan atau mengganti nama file di virtual file system dari satu lokasi ke lokasi lain.',
+      inputSchema: z.object({
+        source: z.string().describe('Path sumber file yang ingin dipindahkan.'),
+        destination: z.string().describe('Path tujuan baru untuk file tersebut.'),
+      }),
+      execute: async ({ source, destination }) => {
+        return await vfs.moveFile(requestChatId, source, destination);
       },
     }),
 
@@ -353,7 +365,7 @@ export async function processMessage(
   history: ModelMessage[],
   options: ProcessMessageOptions,
 ): Promise<{ text: string; responseMessages: ModelMessage[] }> {
-  const MAX_RETRIES = 5;
+  const MAX_RETRIES = 8;
   let lastError: Error | undefined;
 
   requestChatId = options.chatId;
@@ -388,8 +400,8 @@ export async function processMessage(
       }
 
       if (attempt < MAX_RETRIES) {
-        const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
-        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${backoff}ms:`, lastError.message);
+        const backoff = Math.min(3000 * Math.pow(2, attempt - 1) + Math.random() * 1000, 45000);
+        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${Math.round(backoff)}ms:`, lastError.message);
         await delay(backoff);
       }
     }
