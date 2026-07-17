@@ -15,7 +15,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 def run_bot() -> None:
-    app_tg = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).job_queue().post_init(post_init).build()
+    app_tg = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
     register_handlers(app_tg)
     logger.info("Starting Telegram bot polling...")
     app_tg.run_polling(drop_pending_updates=True)
