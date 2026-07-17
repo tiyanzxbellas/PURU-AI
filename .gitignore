@@ -1,24 +1,2 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+node_modules/
 dist/
-build/
-
-# Environment
-.env
-.venv
-venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db

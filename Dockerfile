@@ -1,12 +1,25 @@
-FROM python:3.11-slim
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json ./
+RUN npm ci
 
-COPY . .
+COPY tsconfig.json config.js config.d.ts ./
+COPY src/ ./src/
+
+RUN npx tsc
+
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=build /app/dist/ ./dist/
+COPY config.js config.d.ts ./
 
 EXPOSE 3000
 
-CMD ["python", "run.py"]
+CMD ["node", "dist/index.js"]
