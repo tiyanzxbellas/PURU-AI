@@ -1,4 +1,4 @@
-import { ToolLoopAgent, tool, wrapLanguageModel, type ModelMessage, type LanguageModelMiddleware } from 'ai';
+import { ToolLoopAgent, tool, wrapLanguageModel, isStepCount, type ModelMessage, type LanguageModelMiddleware } from 'ai';
 import { type LanguageModelV4CallOptions } from '@ai-sdk/provider';
 import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
@@ -83,6 +83,7 @@ const model = wrapLanguageModel({
 
 let requestChatId = 0;
 let requestSendFile: ((content: string, filename: string, caption?: string) => Promise<void>) | null = null;
+let requestSendBuffer: ((buffer: Buffer, filename: string, caption?: string) => Promise<void>) | null = null;
 
 const agent = new ToolLoopAgent({
   model,
@@ -95,10 +96,24 @@ You have the following tools available:
 4. edit_file — Find and replace text in a file (virtual file system, user-specific)
 5. delete_file — Delete a file (virtual file system, user-specific)
 6. send_file — Read a file from the virtual file system and send it directly to the user's Telegram chat
-7. get_current_time — Get the current date and time for a given timezone
-8. calculate_math — Evaluate a mathematical expression
+7. soundcloud_search — Search for tracks on SoundCloud
+8. soundcloud_downloader — Download a SoundCloud track by URL and send the audio to the user
+9. search_web — Search the web using Yahoo search
+10. crawl — Crawl a website URL and extract its text content for summarization
+11. get_current_time — Get the current date and time for a given timezone
+12. calculate_math — Evaluate a mathematical expression
+
+=== USER MEMORY SYSTEM ===
+You have a persistent memory file at /memory/MEMORY.md in the user's virtual file system.
+- At the start of each conversation, read /memory/MEMORY.md to recall information about the user (name, age, hobbies, preferences, etc.).
+- When the user tells you personal information about themselves, IMMEDIATELY save it to /memory/MEMORY.md using write_file. Do NOT wait for the user to ask you to save it.
+- Only store permanent user information in MEMORY.md. Do NOT store temporary/session data or conversation state there.
+- If MEMORY.md is empty or doesn't exist, create it with the information you learn.
+- Keep the memory concise and well-organized using Markdown format.
 
 Use the appropriate tools when needed. Be friendly, knowledgeable, and concise.`,
+  allowSystemInMessages: true,
+  stopWhen: isStepCount(20),
   tools: {
     list_directory: tool({
       description: 'Membaca dan menampilkan daftar file serta folder di dalam direktori yang ditentukan di virtual file system.',
@@ -179,6 +194,116 @@ Use the appropriate tools when needed. Be friendly, knowledgeable, and concise.`
       },
     }),
 
+    soundcloud_search: tool({
+      description: 'Mencari lagu atau track di SoundCloud berdasarkan kata kunci.',
+      inputSchema: z.object({
+        q: z.string().describe('Kata kunci pencarian (contoh: "lofi", "chill", "jazz").'),
+        limit: z.number().optional().describe('Jumlah hasil maksimal (default 5, maksimal 20).'),
+      }),
+      execute: async ({ q, limit }) => {
+        const res = await fetch(`https://puruboy-api.vercel.app/api/search/soundcloud?q=${encodeURIComponent(q)}&limit=${limit || 5}`);
+        if (!res.ok) return { error: `API returned status ${res.status}` };
+        const data = await res.json();
+        return { query: q, results: data };
+      },
+    }),
+
+    soundcloud_downloader: tool({
+      description: 'Mengunduh lagu dari SoundCloud berdasarkan URL dan mengirimkan file audionya langsung ke chat Telegram pengguna.',
+      inputSchema: z.object({
+        url: z.string().describe('URL SoundCloud yang ingin diunduh (contoh: "https://soundcloud.com/artist/track-name").'),
+      }),
+      execute: async ({ url }) => {
+        const res = await fetch('https://puruboy-api.vercel.app/api/downloader/soundcloud-v2', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        if (!res.ok) return { success: false, error: `Download API returned status ${res.status}` };
+        const data = await res.json();
+
+        const dlUrl = data?.result?.url;
+        if (!dlUrl) return { success: false, error: 'Could not extract download URL from API response', response: data };
+
+        const audioRes = await fetch(dlUrl);
+        if (!audioRes.ok) return { success: false, error: `Failed to download audio (${audioRes.status})` };
+        const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+        if (requestSendBuffer) {
+          const title = data?.title || data?.result?.title || url.split('/').pop() || 'soundcloud';
+          const filename = `${title}.mp3`;
+          await requestSendBuffer(audioBuffer, filename, title);
+          return { success: true, message: `Audio "${title}" berhasil dikirim ke Telegram` };
+        }
+        return { success: false, error: 'Cannot send audio to chat' };
+      },
+    }),
+
+    search_web: tool({
+      description: 'Mencari informasi di web menggunakan Yahoo Search. Gunakan untuk mencari berita, artikel, atau informasi terkini.',
+      inputSchema: z.object({
+        q: z.string().describe('Kata kunci pencarian (contoh: "berita terkini", "cara membuat website").'),
+      }),
+      execute: async ({ q }) => {
+        const MAX_RETRIES = 5;
+        let lastError: string | undefined;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const res = await fetch(`https://puruboy-api.vercel.app/api/search/yahoo?q=${encodeURIComponent(q)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            return { query: q, results: data?.result || [] };
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
+          if (attempt < MAX_RETRIES) {
+            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+            await delay(backoff);
+          }
+        }
+        return { query: q, error: `Search failed after ${MAX_RETRIES} attempts: ${lastError}`, results: [] };
+      },
+    }),
+
+    crawl: tool({
+      description: 'Mengunjungi dan mengambil isi teks dari sebuah halaman website. Hasilnya akan otomatis diringkas oleh AI.',
+      inputSchema: z.object({
+        url: z.string().describe('URL website yang ingin di-crawl (contoh: "https://example.com/article").'),
+      }),
+      execute: async ({ url }) => {
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          if (!res.ok) return { error: `HTTP ${res.status}`, url };
+          const html = await res.text();
+
+          const text = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+            .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+            .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#x27;/g, "'")
+            .replace(/&#x2F;/g, '/')
+            .replace(/&#xD;/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          const maxLength = 8000;
+          const truncated = text.length > maxLength ? text.slice(0, maxLength) + '\n\n[Content truncated...]' : text;
+          return { url, content: truncated };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { error: `Failed to crawl: ${msg}`, url };
+        }
+      },
+    }),
+
     get_current_time: tool({
       description: 'Mendapatkan informasi tanggal dan waktu saat ini berdasarkan zona waktu tertentu.',
       inputSchema: z.object({
@@ -220,6 +345,7 @@ async function delay(ms: number) {
 export interface ProcessMessageOptions {
   chatId: number;
   sendFile?: (content: string, filename: string, caption?: string) => Promise<void>;
+  sendBuffer?: (buffer: Buffer, filename: string, caption?: string) => Promise<void>;
 }
 
 export async function processMessage(
@@ -232,12 +358,16 @@ export async function processMessage(
 
   requestChatId = options.chatId;
   requestSendFile = options.sendFile || null;
+  requestSendBuffer = options.sendBuffer || null;
+
+  const memoryContent = await vfs.readFile(requestChatId, 'memory/MEMORY.md');
 
   try {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = await agent.stream({
           messages: [
+            ...(memoryContent ? [{ role: 'system' as const, content: `[USER MEMORY]\n${memoryContent}\n[/USER MEMORY]` }] : []),
             ...history,
             { role: 'user', content: userMessage },
           ],
@@ -272,5 +402,6 @@ export async function processMessage(
   } finally {
     requestChatId = 0;
     requestSendFile = null;
+    requestSendBuffer = null;
   }
 }

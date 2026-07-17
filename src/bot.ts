@@ -2,6 +2,7 @@ import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage } from 'ai';
 import { config } from './config.js';
 import { processMessage } from './agent.js';
+import * as vfs from './vfs.js';
 
 function estimateHistoryTokens(messages: ModelMessage[]): number {
   let chars = 0;
@@ -30,8 +31,11 @@ const MENU_TEXT =
   '• /start — Memulai bot\n' +
   '• /menu — Menampilkan menu ini\n' +
   '• /clear — Menghapus riwayat percakapan\n' +
-  '• /token — Melihat penggunaan token\n\n' +
-  'Atau kirim pesan langsung untuk mengobrol dengan AI!';
+  '• /token — Melihat penggunaan token\n' +
+  '• /reset — Reset semua data (riwayat & file)\n' +
+  '• /ai <pesan> — Mengobrol dengan AI (khusus grup)\n\n' +
+  'Di chat pribadi, kirim pesan langsung untuk mengobrol dengan AI.\n' +
+  'Di grup, gunakan /ai diikuti pesan Anda.';
 
 async function safeReply(ctx: Context, text: string, extra?: Record<string, any>) {
   try {
@@ -89,6 +93,13 @@ export function createBot() {
     safeReply(ctx, 'Riwayat percakapan telah dihapus!', { reply_to_message_id: ctx.msg?.message_id });
   });
 
+  bot.command('reset', async (ctx: Context) => {
+    const userId = ctx.from!.id;
+    chatHistories.delete(userId);
+    await vfs.deleteAll(userId);
+    safeReply(ctx, '🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.', { reply_to_message_id: ctx.msg?.message_id });
+  });
+
   bot.command('token', (ctx: Context) => {
     const userId = ctx.from!.id;
     const history = chatHistories.get(userId);
@@ -106,15 +117,34 @@ export function createBot() {
     );
   });
 
+  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset'];
+
   bot.on('message:text', async (ctx: Context) => {
     const chatId = ctx.chat!.id;
     const userId = ctx.from!.id;
-    const userMessage = ctx.message!.text!;
+    const rawText = ctx.message!.text!;
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
 
-    const isCommand = userMessage.startsWith('/');
-    if (isCommand) {
-      await safeReply(ctx, INVALID_COMMAND_TEXT, { reply_to_message_id: ctx.msg?.message_id });
+    let userMessage: string | null = null;
+
+    if (rawText.startsWith('/ai')) {
+      const rest = rawText.slice(3).trim();
+      if (rest) {
+        userMessage = rest;
+      } else {
+        await safeReply(ctx, 'Gunakan /ai diikuti pesan, contoh: /ai apa kabar?', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+    } else if (rawText.startsWith('/')) {
+      if (isGroup) return;
+      const cmd = rawText.split(/\s/)[0];
+      if (!KNOWN_COMMANDS.includes(cmd)) {
+        await safeReply(ctx, INVALID_COMMAND_TEXT, { reply_to_message_id: ctx.msg?.message_id });
+      }
       return;
+    } else {
+      if (isGroup) return;
+      userMessage = rawText;
     }
 
     if (!chatHistories.has(userId)) {
@@ -126,11 +156,17 @@ export function createBot() {
     const thinkingMsgId = thinkingMsg.message_id;
 
     try {
-      const { text, responseMessages } = await processMessage(userMessage, history, {
+      const { text, responseMessages } = await processMessage(userMessage!, history, {
         chatId: userId,
         sendFile: async (content, filename, caption) => {
           await ctx.replyWithDocument(
             new InputFile(Buffer.from(content, 'utf-8'), filename),
+            { caption: caption || filename },
+          );
+        },
+        sendBuffer: async (buffer, filename, caption) => {
+          await ctx.replyWithDocument(
+            new InputFile(buffer, filename),
             { caption: caption || filename },
           );
         },

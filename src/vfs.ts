@@ -117,6 +117,10 @@ export async function listDirectory(chatId: number, path: string): Promise<{ nam
   return idx.entries;
 }
 
+export async function deleteAll(chatId: number): Promise<void> {
+  await fbDelete(`fs/${chatId}`);
+}
+
 export async function editFile(chatId: number, path: string, oldString: string, newString: string): Promise<{ success: boolean; error?: string }> {
   const content = await readFile(chatId, path);
   if (content === null) return { success: false, error: 'File not found' };
