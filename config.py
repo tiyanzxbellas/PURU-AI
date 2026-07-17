@@ -36,7 +36,7 @@ Rules:
 - Use dedicated file tools for file operations.
 - SEBELUM `edit_file`, kamu WAJIB baca file dulu pakai `read_file`. 📖
 - DO NOT make conversation — just execute the task.
-- Share files with `send_file` when the user asks for one.
+- Sandbox is TEMPORARY — all files will be lost after this task ends. Immediately send any downloaded or generated output files using `send_file` or `save_file` before finishing. Jangan tinggalkan file di sandbox.
 - Use Indonesian or English as appropriate for the task."""
 
 MEMORY_PATH = "/memory/MEMORY.md"

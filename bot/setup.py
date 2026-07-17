@@ -2,7 +2,7 @@ import logging
 
 from telegram import BotCommand
 from telegram.ext import CommandHandler, MessageHandler, filters
-from .commands_core import start, menu, tools_cmd, memory_cmd
+from .commands_core import start, menu, agents_cmd, memory_cmd
 from .commands_ctx import context_cmd, compact_cmd, clear, clear_all
 from .commands_ai import ai_ask, handle_document, handle_message
 from .metrics import get_bio_texts
@@ -13,7 +13,7 @@ BOT_COMMANDS = [
     BotCommand("start", "Show welcome message"),
     BotCommand("menu", "Show all commands"),
     BotCommand("ai", "Ask Puru AI (use in groups)"),
-    BotCommand("tools", "Show available tools"),
+    BotCommand("agents", "Lihat daftar agen"),
     BotCommand("context", "Show token usage info"),
     BotCommand("compact", "Summarize & compress context"),
     BotCommand("clear", "Clear conversation history"),
@@ -47,7 +47,7 @@ def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("ai", ai_ask))
-    app.add_handler(CommandHandler("tools", tools_cmd))
+    app.add_handler(CommandHandler("agents", agents_cmd))
     app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(CommandHandler("context", context_cmd))
     app.add_handler(CommandHandler("compact", compact_cmd))

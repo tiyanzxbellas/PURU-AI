@@ -98,8 +98,15 @@ def _make_worker_tools(user_id: int, pending_files: list) -> list[FunctionTool]:
             pending_files.append(file_data)
         return result_text
 
+    def ls_cmd(path: str = ".", reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "bash", {"command": f"ls -la {path}", "reason": reason or "list directory"})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
     return [
         FunctionTool(bash_cmd, description="Execute a bash command in the sandbox. Timeout: 1 minute.", name="bash"),
+        FunctionTool(ls_cmd, description="List files and directories in the sandbox.", name="ls"),
         FunctionTool(write_file, description="Write content to a file in Firebase storage. Auto-saves to Firebase.", name="write_file"),
         FunctionTool(edit_file, description="Edit a file in Firebase storage by replacing exact old text with new text.", name="edit_file"),
         FunctionTool(delete_file, description="Delete a file from Firebase storage.", name="delete_file"),
@@ -195,6 +202,24 @@ async def chat_with_autogen(user_id: int, message: str):
             pending_files.append(file_data)
         return result_text
 
+    def orchestrator_send_file(path: str, caption: str = "", reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "send_file", {"path": path, "caption": caption, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    def orchestrator_delete_file(path: str, reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "delete_file", {"path": path, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
+    def orchestrator_save_file(path: str, reason: str = "") -> str:
+        result_text, file_data = execute_tool(user_id, "save_file", {"path": path, "reason": reason})
+        if file_data:
+            pending_files.append(file_data)
+        return result_text
+
     orchestrator_tools = [
         FunctionTool(
             orchestrator_ls,
@@ -215,6 +240,21 @@ async def chat_with_autogen(user_id: int, message: str):
             orchestrator_edit_file,
             description="Edit a file in Firebase storage by replacing exact old text with new text.",
             name="edit_file",
+        ),
+        FunctionTool(
+            orchestrator_send_file,
+            description="Send a file from the sandbox to the Telegram chat.",
+            name="send_file",
+        ),
+        FunctionTool(
+            orchestrator_delete_file,
+            description="Delete a file from Firebase storage.",
+            name="delete_file",
+        ),
+        FunctionTool(
+            orchestrator_save_file,
+            description="Save a file from the sandbox to Firebase permanently. Max 2MB.",
+            name="save_file",
         ),
         FunctionTool(
             delegate_task,

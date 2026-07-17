@@ -131,7 +131,7 @@ body{{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0f17
 <div class="info-row"><span class="label">/start</span><span class="value">Welcome message</span></div>
 <div class="info-row"><span class="label">/menu</span><span class="value">Show all commands</span></div>
 <div class="info-row"><span class="label">/ai</span><span class="value">Ask AI (use in groups)</span></div>
-<div class="info-row"><span class="label">/tools</span><span class="value">Show available tools</span></div>
+<div class="info-row"><span class="label">/agents</span><span class="value">Lihat daftar agen</span></div>
 <div class="info-row"><span class="label">/context</span><span class="value">Token usage info</span></div>
 <div class="info-row"><span class="label">/compact</span><span class="value">Summarize &amp; compress context</span></div>
 <div class="info-row"><span class="label">/clear</span><span class="value">Clear conversation history</span></div>

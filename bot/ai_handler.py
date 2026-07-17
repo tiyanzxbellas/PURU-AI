@@ -2,7 +2,6 @@ import asyncio
 import logging
 from io import BytesIO
 from telegram import Update
-from sandbox import close_sandbox
 from agent.autogen_engine import chat_with_autogen
 
 logger = logging.getLogger(__name__)
@@ -47,4 +46,3 @@ async def run_with_tools(update: Update, message_text: str) -> None:
         logger.exception("Error in run_with_tools")
         try: await status_msg.edit_text(f"Error: {e}")
         except Exception: pass
-    finally: close_sandbox(chat_id)

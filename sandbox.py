@@ -1,3 +1,5 @@
+import time
+
 from e2b import Sandbox
 from config import E2B_API_KEY
 from firebase import (
@@ -11,9 +13,11 @@ from firebase import (
 
 sandboxes: dict[int, Sandbox] = {}
 _sandbox_versions: dict[int, str] = {}  # chat_id -> last synced Firebase version
+_sandbox_created_at: dict[int, float] = {}  # chat_id -> timestamp when sandbox was created
 
 BASH_TIMEOUT = 60  # 1 minute
-SANDBOX_TIMEOUT = 900  # 15 minutes
+SANDBOX_TIMEOUT = 1800  # 30 minutes
+RENEW_THRESHOLD = 360  # 6 minutes
 
 
 def _sync_sandbox(sandbox, chat_id: int):
@@ -31,9 +35,20 @@ def _sync_sandbox(sandbox, chat_id: int):
     _sandbox_versions[chat_id] = fb_ver
 
 
+def _sandbox_expiring_soon(user_id: int) -> bool:
+    created = _sandbox_created_at.get(user_id)
+    if created is None:
+        return True
+    elapsed = time.time() - created
+    return (SANDBOX_TIMEOUT - elapsed) <= RENEW_THRESHOLD
+
+
 def get_sandbox(user_id: int) -> Sandbox:
+    if user_id in sandboxes and _sandbox_expiring_soon(user_id):
+        close_sandbox(user_id)
     if user_id not in sandboxes:
         sandboxes[user_id] = Sandbox(api_key=E2B_API_KEY, timeout=SANDBOX_TIMEOUT)
+        _sandbox_created_at[user_id] = time.time()
     return sandboxes[user_id]
 
 
@@ -44,6 +59,7 @@ def close_sandbox(user_id: int) -> None:
         except Exception:
             pass
         del sandboxes[user_id]
+    _sandbox_created_at.pop(user_id, None)
 
 
 REASON_DESC = "Wajib diisi — jelaskan kenapa kamu pakai tool ini dan apa yang kamu harapkan"

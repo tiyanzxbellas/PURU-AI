@@ -19,7 +19,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/start - Welcome message\n"
         "/menu - Show this menu\n"
         "/ai - Ask AI (use in groups)\n"
-        "/tools - Show available tools\n"
+        "/agents - Lihat daftar agen\n"
         "/context - Token usage info\n"
         "/compact - Summarize context\n"
         "/clear - Clear history\n"
@@ -31,26 +31,30 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         do_quote=True,
     )
 
-async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    track_message(update.effective_user.id, update.effective_user.username, "tools")
+async def agents_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_message(update.effective_user.id, update.effective_user.username, "agents")
     await update.message.reply_text(
-        "*Available Tools*\n\n"
-        "The AI uses a two-agent system:\n\n"
-        "*Puru (Orchestrator)* — file operations langsung\n"
-        "• *ls* — List files/directories\n"
-        "• *read\\_file* — Read file contents\n"
-        "• *write\\_file* — Write/create files\n"
-        "• *edit\\_file* — Edit files (find & replace)\n"
-        "• *delegate\\_task* — Delegate bash/search/download/code ke worker\n\n"
+        "*Daftar Agen*\n\n"
+        "Bot ini pakai sistem dua agen:\n\n"
+        "*Puru (Orchestrator)* — operasi file langsung\n"
+        "• *ls* — Lihat daftar file/direktori\n"
+        "• *read\\_file* — Baca isi file\n"
+        "• *write\\_file* — Tulis/buat file\n"
+        "• *edit\\_file* — Edit file (cari & ganti)\n"
+        "• *send\\_file* — Kirim file ke chat\n"
+        "• *delete\\_file* — Hapus file\n"
+        "• *save\\_file* — Simpan file ke Firebase (max 2MB)\n"
+        "• *delegate\\_task* — Delegasikan bash/search/download/code ke worker\n\n"
         "*Worker (Executor)*\n"
-        "• *bash* — Execute bash commands\n"
-        "• *write\\_file* — Write/create files\n"
-        "• *read\\_file* — Read file contents\n"
-        "• *edit\\_file* — Edit files (find & replace)\n"
-        "• *delete\\_file* — Delete files\n"
-        "• *send\\_file* — Send files to chat (auto-detects audio/video/image)\n"
-        "• *save\\_file* — Save file to Firebase permanently (max 2MB)\n\n"
-        "_Just describe what you want, the orchestrator delegates tasks to the worker._",
+        "• *bash* — Eksekusi perintah bash\n"
+        "• *ls* — Lihat daftar file/direktori\n"
+        "• *write\\_file* — Tulis/buat file\n"
+        "• *read\\_file* — Baca isi file\n"
+        "• *edit\\_file* — Edit file (cari & ganti)\n"
+        "• *send\\_file* — Kirim file ke chat (auto-detect audio/video/image)\n"
+        "• *delete\\_file* — Hapus file\n"
+        "• *save\\_file* — Simpan file ke Firebase (max 2MB)\n\n"
+        "_Tinggal bilang aja apa yang lo mau, orchestrator bakal delegasiin tugas ke worker._",
         parse_mode="Markdown",
         do_quote=True,
     )
