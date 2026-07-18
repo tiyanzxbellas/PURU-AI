@@ -12,7 +12,22 @@ const provider = createOpenAI({
   name: 'puru',
 });
 
-function estimatePromptTokens(prompt: Array<{ role: string; content: any }>): number {
+export function estimateSimpleTokens(history: ModelMessage[]): number {
+  let chars = 0;
+  for (const msg of history) {
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+    if (typeof msg.content === 'string') {
+      chars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part.type === 'text') chars += (part.text || '').length;
+      }
+    }
+  }
+  return Math.round(chars / 4);
+}
+
+export function estimatePromptTokens(prompt: Array<{ role: string; content: any }>): number {
   let chars = 0;
   for (const msg of prompt) {
     if (typeof msg.content === 'string') {
@@ -430,7 +445,7 @@ export async function processMessage(
   userMessage: string,
   history: ModelMessage[],
   options: ProcessMessageOptions,
-): Promise<{ text: string; responseMessages: ModelMessage[] }> {
+): Promise<{ text: string; responseMessages: ModelMessage[]; totalTokens: number }> {
   const MAX_RETRIES = 8;
   let lastError: Error | undefined;
 
@@ -451,13 +466,14 @@ export async function processMessage(
           ],
         });
 
-        const [text, responseMessages] = await Promise.all([
+        const [text, responseMessages, usage] = await Promise.all([
           result.text,
           result.responseMessages,
+          result.usage,
         ]);
 
         if (text) {
-          return { text, responseMessages: responseMessages as ModelMessage[] };
+          return { text, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0 };
         }
 
         lastError = new Error('Empty response from AI');
@@ -476,10 +492,49 @@ export async function processMessage(
     return {
       text: 'Maaf, saya tidak bisa merespons saat ini.',
       responseMessages: [],
+      totalTokens: 0,
     };
   } finally {
     requestChatId = 0;
     requestSendFile = null;
     requestSendBuffer = null;
   }
+}
+
+export async function summarizeHistory(history: ModelMessage[]): Promise<ModelMessage[]> {
+  const conversationText = history.map(m => {
+    if (typeof m.content === 'string') return `${m.role}: ${m.content}`;
+    if (Array.isArray(m.content)) {
+      return m.content
+        .filter(p => p.type === 'text' || p.type === 'reasoning')
+        .map(p => `${m.role}: ${p.type === 'reasoning' ? '[reasoning] ' : ''}${p.text}`)
+        .join('\n');
+    }
+    return '';
+  }).join('\n\n');
+
+  const truncated = conversationText.length > 10000
+    ? conversationText.slice(0, 10000) + '\n...(truncated)'
+    : conversationText;
+
+  const result = await chatModel.doGenerate({
+    prompt: [{ role: 'user', content: [{ type: 'text', text: `Ringkas percakapan berikut dalam bahasa Indonesia menggunakan format poin-poin penting. Pisahkan menjadi dua bagian:
+
+## Yang sudah dibahas sebelumnya
+[poin-poin penting dari percakapan sebelumnya]
+
+## Yang sedang dibahas saat ini
+[topik yang sedang aktif dibahas]
+
+Percakapan:
+${truncated}` }] }],
+    maxOutputTokens: 1024,
+  });
+
+  const summaryText = result.content
+    .filter(p => p.type === 'text')
+    .map(p => p.text)
+    .join('');
+
+  return [{ role: 'system' as const, content: `[RINGKASAN PERCAKAPAN]\n${summaryText}\n[/RINGKASAN PERCAKAPAN]` }];
 }

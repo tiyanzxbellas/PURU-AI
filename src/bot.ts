@@ -1,29 +1,11 @@
 import { Bot, InputFile, GrammyError, type Context } from 'grammy';
-import { type ModelMessage } from 'ai';
+import { type ModelMessage, pruneMessages } from 'ai';
 import { config } from './config.js';
-import { processMessage } from './agent.js';
+import { processMessage, estimateSimpleTokens, summarizeHistory } from './agent.js';
 import * as vfs from './vfs.js';
 
-function estimateHistoryTokens(messages: ModelMessage[]): number {
-  let chars = 0;
-  for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      chars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.type === 'text') chars += (part.text || '').length;
-        else if (part.type === 'reasoning') chars += (part.text || '').length;
-        else if (part.type === 'tool-call') chars += JSON.stringify((part as any).args || {}).length + ((part as any).toolName || '').length + 50;
-        else if (part.type === 'tool-result') {
-          const val = (part as any).result;
-          const r = typeof val === 'string' ? val : JSON.stringify(val || {});
-          chars += r.length;
-        }
-      }
-    }
-  }
-  return Math.round(chars / 4);
-}
+const COMPACT_THRESHOLD = 20000;
+const SUMMARIZE_THRESHOLD = 10000;
 
 const MENU_TEXT =
   '📋 *Menu PURU-AI*\n\n' +
@@ -61,6 +43,38 @@ async function safeEdit(ctx: Context, chatId: number, messageId: number, text: s
   }
 }
 
+async function compactHistory(history: ModelMessage[], userId: number, totalTokens: number, chatAccumulatedTokens: Map<number, number>) {
+  if (totalTokens <= COMPACT_THRESHOLD) return;
+
+  const pruned = pruneMessages({
+    messages: history,
+    reasoning: 'before-last-message',
+    toolCalls: 'before-last-2-messages',
+    emptyMessages: 'remove',
+  });
+
+  const estimatedTokens = estimateSimpleTokens(pruned);
+
+  if (estimatedTokens > SUMMARIZE_THRESHOLD) {
+    try {
+      const summary = await summarizeHistory(pruned);
+      history.length = 0;
+      history.push(...summary);
+      console.log(`[${userId}] History summarized (${estimatedTokens} -> ${estimateSimpleTokens(summary)} estimated tokens)`);
+    } catch (err) {
+      history.length = 0;
+      history.push(...pruned);
+      console.log(`[${userId}] Summarize failed, using pruned history:`, err);
+    }
+  } else {
+    history.length = 0;
+    history.push(...pruned);
+    console.log(`[${userId}] History pruned (${totalTokens} -> ${estimatedTokens} estimated tokens)`);
+  }
+
+  chatAccumulatedTokens.set(userId, estimateSimpleTokens(history));
+}
+
 const INVALID_COMMAND_TEXT =
   '❌ Perintah tidak dikenal. Gunakan /menu untuk melihat daftar perintah yang tersedia.';
 
@@ -68,6 +82,7 @@ export function createBot() {
   const bot = new Bot(config.telegramBotToken);
 
   const chatHistories = new Map<number, ModelMessage[]>();
+  const chatAccumulatedTokens = new Map<number, number>();
 
   bot.command('start', (ctx: Context) => {
     safeReply(
@@ -90,29 +105,32 @@ export function createBot() {
   bot.command('clear', (ctx: Context) => {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
+    chatAccumulatedTokens.delete(userId);
     safeReply(ctx, 'Riwayat percakapan telah dihapus!', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('reset', async (ctx: Context) => {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
+    chatAccumulatedTokens.delete(userId);
     await vfs.deleteAll(userId);
     safeReply(ctx, '🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('token', (ctx: Context) => {
     const userId = ctx.from!.id;
-    const history = chatHistories.get(userId);
-    if (!history || history.length === 0) {
+    const lastUsage = chatAccumulatedTokens.get(userId) || 0;
+    if (lastUsage === 0) {
       safeReply(ctx, 'Belum ada riwayat percakapan.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
-    const total = estimateHistoryTokens(history);
+    const pct = lastUsage > 0 ? Math.round((lastUsage / 128000) * 100) : 0;
     safeReply(
       ctx,
-      '📊 *Perkiraan Token*\n\n' +
-      `Riwayat saat ini: ~${total} token\n\n` +
-      `_Estimasi berdasarkan ~4 karakter per token_`,
+      '📊 *Penggunaan Token*\n\n' +
+      `Terakhir dipakai: ${lastUsage.toLocaleString()} token\n` +
+      `Batas API: 128.000 token (${pct}%)\n\n` +
+      `_${lastUsage > COMPACT_THRESHOLD ? '⚠️' : '✅'} Auto-compact di ${COMPACT_THRESHOLD.toLocaleString()} token_`,
       { reply_to_message_id: ctx.msg?.message_id },
     );
   });
@@ -175,7 +193,7 @@ export function createBot() {
         ? `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\`\n\n${prompt}`
         : `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\``;
 
-      const { text, responseMessages } = await processMessage(injectedPrompt, history, {
+      const { text, responseMessages, totalTokens } = await processMessage(injectedPrompt, history, {
         chatId: userId,
         sendFile: async (content, filename, caption) => {
           await ctx.replyWithDocument(
@@ -184,19 +202,25 @@ export function createBot() {
           );
         },
         sendBuffer: async (buffer, filename, caption) => {
-          await ctx.replyWithDocument(
-            new InputFile(buffer, filename),
-            { caption: caption || filename },
-          );
+          const ext = filename.split('.').pop()?.toLowerCase();
+          const audioExts = ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'wma'];
+          const videoExts = ['mp4', 'webm', 'avi', 'mkv', 'mov'];
+          if (audioExts.includes(ext || '')) {
+            await ctx.replyWithAudio(new InputFile(buffer, filename), { caption: caption || filename });
+          } else if (videoExts.includes(ext || '')) {
+            await ctx.replyWithVideo(new InputFile(buffer, filename), { caption: caption || filename });
+          } else {
+            await ctx.replyWithDocument(new InputFile(buffer, filename), { caption: caption || filename });
+          }
         },
       });
 
       history.push({ role: 'user', content: injectedPrompt } as ModelMessage);
       history.push(...responseMessages);
 
-      if (history.length > 40) {
-        history.splice(0, history.length - 40);
-      }
+      chatAccumulatedTokens.set(userId, totalTokens);
+
+      await compactHistory(history, userId, totalTokens, chatAccumulatedTokens);
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
     } catch (error) {
@@ -238,11 +262,20 @@ export function createBot() {
     }
     const history = chatHistories.get(userId)!;
 
-    const thinkingMsg = await ctx.reply('🤔 PURU-AI sedang berpikir...', { reply_to_message_id: ctx.msg?.message_id });
+    let thinkingMsg;
+    try {
+      thinkingMsg = await ctx.reply('🤔 PURU-AI sedang berpikir...', { reply_to_message_id: ctx.msg?.message_id });
+    } catch (err) {
+      if (err instanceof GrammyError && err.error_code === 400 && err.description?.includes('message to be replied not found')) {
+        thinkingMsg = await ctx.reply('🤔 PURU-AI sedang berpikir...');
+      } else {
+        throw err;
+      }
+    }
     const thinkingMsgId = thinkingMsg.message_id;
 
     try {
-      const { text, responseMessages } = await processMessage(userMessage!, history, {
+      const { text, responseMessages, totalTokens } = await processMessage(userMessage!, history, {
         chatId: userId,
         sendFile: async (content, filename, caption) => {
           await ctx.replyWithDocument(
@@ -251,19 +284,25 @@ export function createBot() {
           );
         },
         sendBuffer: async (buffer, filename, caption) => {
-          await ctx.replyWithDocument(
-            new InputFile(buffer, filename),
-            { caption: caption || filename },
-          );
+          const ext = filename.split('.').pop()?.toLowerCase();
+          const audioExts = ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'wma'];
+          const videoExts = ['mp4', 'webm', 'avi', 'mkv', 'mov'];
+          if (audioExts.includes(ext || '')) {
+            await ctx.replyWithAudio(new InputFile(buffer, filename), { caption: caption || filename });
+          } else if (videoExts.includes(ext || '')) {
+            await ctx.replyWithVideo(new InputFile(buffer, filename), { caption: caption || filename });
+          } else {
+            await ctx.replyWithDocument(new InputFile(buffer, filename), { caption: caption || filename });
+          }
         },
       });
 
       history.push({ role: 'user', content: userMessage } as ModelMessage);
       history.push(...responseMessages);
 
-      if (history.length > 40) {
-        history.splice(0, history.length - 40);
-      }
+      chatAccumulatedTokens.set(userId, totalTokens);
+
+      await compactHistory(history, userId, totalTokens, chatAccumulatedTokens);
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
     } catch (error) {
