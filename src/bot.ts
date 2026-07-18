@@ -1,11 +1,10 @@
 import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage, pruneMessages } from 'ai';
 import { config } from './config.js';
-import { processMessage, estimateSimpleTokens, summarizeHistory } from './agent.js';
+import { processMessage, estimateSimpleTokens } from './agent.js';
 import * as vfs from './vfs.js';
 
-const COMPACT_THRESHOLD = 20000;
-const SUMMARIZE_THRESHOLD = 10000;
+const MAX_HISTORY_TOKENS = 5000;
 
 const MENU_TEXT =
   '📋 *Menu PURU-AI*\n\n' +
@@ -43,36 +42,37 @@ async function safeEdit(ctx: Context, chatId: number, messageId: number, text: s
   }
 }
 
-async function compactHistory(history: ModelMessage[], userId: number, totalTokens: number, chatAccumulatedTokens: Map<number, number>) {
-  if (totalTokens <= COMPACT_THRESHOLD) return;
-
+async function compactHistory(history: ModelMessage[], userId: number, chatAccumulatedTokens: Map<number, number>) {
   const pruned = pruneMessages({
     messages: history,
     reasoning: 'before-last-message',
-    toolCalls: 'before-last-2-messages',
+    toolCalls: 'before-last-6-messages',
     emptyMessages: 'remove',
   });
 
-  const estimatedTokens = estimateSimpleTokens(pruned);
+  let estimatedTokens = estimateSimpleTokens(pruned);
+  console.log(`[${userId}] History after prune: ${estimatedTokens} estimated tokens`);
 
-  if (estimatedTokens > SUMMARIZE_THRESHOLD) {
-    try {
-      const summary = await summarizeHistory(pruned);
-      history.length = 0;
-      history.push(...summary);
-      console.log(`[${userId}] History summarized (${estimatedTokens} -> ${estimateSimpleTokens(summary)} estimated tokens)`);
-    } catch (err) {
-      history.length = 0;
-      history.push(...pruned);
-      console.log(`[${userId}] Summarize failed, using pruned history:`, err);
+  if (estimatedTokens > MAX_HISTORY_TOKENS) {
+    const temp = [...pruned];
+    while (estimateSimpleTokens(temp) > MAX_HISTORY_TOKENS && temp.length > 1) {
+      const firstNonSystem = temp.findIndex(m => m.role !== 'system');
+      if (firstNonSystem >= 0) {
+        temp.splice(firstNonSystem, 1);
+      } else {
+        break;
+      }
     }
+    history.length = 0;
+    history.push(...temp);
+    estimatedTokens = estimateSimpleTokens(temp);
+    console.log(`[${userId}] History trimmed to ${estimatedTokens} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
   } else {
     history.length = 0;
     history.push(...pruned);
-    console.log(`[${userId}] History pruned (${totalTokens} -> ${estimatedTokens} estimated tokens)`);
   }
 
-  chatAccumulatedTokens.set(userId, estimateSimpleTokens(history));
+  chatAccumulatedTokens.set(userId, estimatedTokens);
 }
 
 const INVALID_COMMAND_TEXT =
@@ -83,6 +83,7 @@ export function createBot() {
 
   const chatHistories = new Map<number, ModelMessage[]>();
   const chatAccumulatedTokens = new Map<number, number>();
+  const chatTotalTokens = new Map<number, { total: number; input: number; output: number }>();
 
   bot.command('start', (ctx: Context) => {
     safeReply(
@@ -106,6 +107,7 @@ export function createBot() {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
     chatAccumulatedTokens.delete(userId);
+    chatTotalTokens.delete(userId);
     safeReply(ctx, 'Riwayat percakapan telah dihapus!', { reply_to_message_id: ctx.msg?.message_id });
   });
 
@@ -113,26 +115,26 @@ export function createBot() {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
     chatAccumulatedTokens.delete(userId);
+    chatTotalTokens.delete(userId);
     await vfs.deleteAll(userId);
     safeReply(ctx, '🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('token', (ctx: Context) => {
     const userId = ctx.from!.id;
-    const lastUsage = chatAccumulatedTokens.get(userId) || 0;
-    if (lastUsage === 0) {
+    const historyTokens = chatAccumulatedTokens.get(userId) || 0;
+    const lastStep = chatTotalTokens.get(userId);
+    if (historyTokens === 0 && !lastStep) {
       safeReply(ctx, 'Belum ada riwayat percakapan.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
-    const pct = lastUsage > 0 ? Math.round((lastUsage / 128000) * 100) : 0;
-    safeReply(
-      ctx,
-      '📊 *Penggunaan Token*\n\n' +
-      `Terakhir dipakai: ${lastUsage.toLocaleString()} token\n` +
-      `Batas API: 128.000 token (${pct}%)\n\n` +
-      `_${lastUsage > COMPACT_THRESHOLD ? '⚠️' : '✅'} Auto-compact di ${COMPACT_THRESHOLD.toLocaleString()} token_`,
-      { reply_to_message_id: ctx.msg?.message_id },
-    );
+    let reply = '📊 *Penggunaan Token*\n\n' +
+      `📜 History: ${historyTokens.toLocaleString()} token (estimasi user & assistant)\n`;
+    if (lastStep) {
+      reply += `🔢 Last step: ${lastStep.total.toLocaleString()} token (input: ${lastStep.input.toLocaleString()} + output: ${lastStep.output.toLocaleString()})\n\n`;
+    }
+    reply += `_ℹ️ History otomatis dipotong jika estimasi > ${MAX_HISTORY_TOKENS.toLocaleString()} token_`;
+    safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
   const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset'];
@@ -193,7 +195,7 @@ export function createBot() {
         ? `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\`\n\n${prompt}`
         : `[Uploaded file: /${vfsPath}]\n\`\`\`\n${filePreview}\n\`\`\``;
 
-      const { text, responseMessages, totalTokens } = await processMessage(injectedPrompt, history, {
+      const { text, responseMessages, totalTokens, lastStepUsage } = await processMessage(injectedPrompt, history, {
         chatId: userId,
         sendFile: async (content, filename, caption) => {
           await ctx.replyWithDocument(
@@ -218,9 +220,8 @@ export function createBot() {
       history.push({ role: 'user', content: injectedPrompt } as ModelMessage);
       history.push(...responseMessages);
 
-      chatAccumulatedTokens.set(userId, totalTokens);
-
-      await compactHistory(history, userId, totalTokens, chatAccumulatedTokens);
+      chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await compactHistory(history, userId, chatAccumulatedTokens);
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
     } catch (error) {
@@ -275,7 +276,7 @@ export function createBot() {
     const thinkingMsgId = thinkingMsg.message_id;
 
     try {
-      const { text, responseMessages, totalTokens } = await processMessage(userMessage!, history, {
+      const { text, responseMessages, totalTokens, lastStepUsage } = await processMessage(userMessage!, history, {
         chatId: userId,
         sendFile: async (content, filename, caption) => {
           await ctx.replyWithDocument(
@@ -300,9 +301,8 @@ export function createBot() {
       history.push({ role: 'user', content: userMessage } as ModelMessage);
       history.push(...responseMessages);
 
-      chatAccumulatedTokens.set(userId, totalTokens);
-
-      await compactHistory(history, userId, totalTokens, chatAccumulatedTokens);
+      chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await compactHistory(history, userId, chatAccumulatedTokens);
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
     } catch (error) {
