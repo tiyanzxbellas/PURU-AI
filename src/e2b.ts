@@ -88,7 +88,7 @@ export async function readFileFromSandbox(chatId: number, path: string): Promise
   }
 
   try {
-    const content = await sandbox.files.read(path);
+    const content = await sandbox.files.read(path, { format: 'bytes' });
     return { content: Buffer.from(content) };
   } catch (err) {
     sandboxMap.delete(chatId);
