@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { processMessage, estimateSimpleTokens } from './agent.js';
 import * as vfs from './vfs.js';
 
-const MAX_HISTORY_TOKENS = 5000;
+const MAX_HISTORY_TOKENS = 2048;
 
 const MENU_TEXT =
   '📋 *Menu PURU-AI*\n\n' +
@@ -124,12 +124,18 @@ export function createBot() {
     const userId = ctx.from!.id;
     const historyTokens = chatAccumulatedTokens.get(userId) || 0;
     const lastStep = chatTotalTokens.get(userId);
-    if (historyTokens === 0 && !lastStep) {
+    const history = chatHistories.get(userId);
+    if ((historyTokens === 0 || !history || history.length === 0) && !lastStep) {
       safeReply(ctx, 'Belum ada riwayat percakapan.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
+    const userCount = history ? history.filter(m => m.role === 'user').length : 0;
+    const assistantCount = history ? history.filter(m => m.role === 'assistant').length : 0;
+
     let reply = '📊 *Penggunaan Token*\n\n' +
-      `📜 History: ${historyTokens.toLocaleString()} token (estimasi user & assistant)\n`;
+      `👤 User: ${userCount} pesan\n` +
+      `🤖 Assistant: ${assistantCount} pesan\n` +
+      `📜 History: ${historyTokens.toLocaleString()} token (estimasi)\n`;
     if (lastStep) {
       reply += `🔢 Last step: ${lastStep.total.toLocaleString()} token (input: ${lastStep.input.toLocaleString()} + output: ${lastStep.output.toLocaleString()})\n\n`;
     }
