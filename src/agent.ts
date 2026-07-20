@@ -517,10 +517,11 @@ export async function processMessage(
           totalTokens: lastStep?.usage?.totalTokens ?? 0,
         };
 
-        const hasToolCalls = responseMessages.some(m =>
+        const lastStepMessages = steps?.[steps.length - 1]?.response || [];
+        const lastStepHasToolCalls = lastStepMessages.some((m: any) =>
           m.role === 'assistant' && Array.isArray(m.content) && m.content.some(p => p.type === 'tool-call')
         );
-        if (text || hasToolCalls) {
+        if (text || lastStepHasToolCalls) {
           return { text, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
         }
 
