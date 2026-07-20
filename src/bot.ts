@@ -14,6 +14,9 @@ const MENU_TEXT =
   '• /clear — Menghapus riwayat percakapan\n' +
   '• /token — Melihat penggunaan token\n' +
   '• /reset — Reset semua data (riwayat & file)\n' +
+  '• /skills — Melihat daftar skill\n' +
+  '• /skills read <nomor> — Membaca isi skill\n' +
+  '• /skills delete <nomor> — Menghapus skill\n' +
   '• /ai <pesan> — Mengobrol dengan AI (khusus grup)\n\n' +
   'Di chat pribadi, kirim pesan langsung untuk mengobrol dengan AI.\n' +
   'Di grup, gunakan /ai diikuti pesan Anda.';
@@ -143,7 +146,45 @@ export function createBot() {
     safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
-  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset'];
+  bot.command('skills', async (ctx: Context) => {
+    const userId = ctx.from!.id;
+    const fullText = ctx.message?.text || '';
+    const args = fullText.replace(/^\/skills\s*/i, '').trim().split(/\s+/);
+
+    const entries = await vfs.listDirectory(userId, 'skills');
+    const skillNames = entries.filter(e => e.name && e.name.endsWith('.md')).map(e => e.name.replace(/\.md$/, ''));
+
+    if (args.length === 0 || (args.length === 1 && args[0] === '')) {
+      if (skillNames.length === 0) {
+        await safeReply(ctx, 'Belum ada skill tersimpan.', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+      await safeReply(ctx, `📚 *Daftar Skills:*\n\n${skillNames.map((n, i) => `• ${i + 1}. ${n}`).join('\n')}\n\nGunakan:\n/skills read <nomor>\n/skills delete <nomor>`, { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+
+    const sub = args[0].toLowerCase();
+    const num = parseInt(args[1], 10);
+
+    if (isNaN(num) || num < 1 || num > skillNames.length) {
+      await safeReply(ctx, `Nomor tidak valid. Gunakan /skills untuk melihat daftar skill.`, { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+
+    const skillName = skillNames[num - 1];
+
+    if (sub === 'read') {
+      const content = await vfs.readFile(userId, `skills/${skillName}.md`);
+      await safeReply(ctx, `📖 *${skillName}*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
+    } else if (sub === 'delete') {
+      await vfs.deleteFile(userId, `skills/${skillName}.md`);
+      await safeReply(ctx, `🗑️ Skill "${skillName}" berhasil dihapus.`, { reply_to_message_id: ctx.msg?.message_id });
+    } else {
+      await safeReply(ctx, 'Subperintah tidak dikenal. Gunakan: /skills read <nomor> atau /skills delete <nomor>', { reply_to_message_id: ctx.msg?.message_id });
+    }
+  });
+
+  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset', '/skills'];
 
   bot.on('message:document', async (ctx: Context) => {
     const userId = ctx.from!.id;

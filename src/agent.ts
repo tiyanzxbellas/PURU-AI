@@ -111,7 +111,7 @@ const agent = new ToolLoopAgent({
 - You MUST use a tool to search, read, write, edit, delete, send, calculate, or execute anything.
 - If you write "I have searched" without calling search_web, that is a HALLUCINATION. STOP and call the tool.
 - No greetings or pleasantries. No "Halo!", "Tentu!", "Baiklah!", etc.
-- Be direct and concise. Short answers. No long formal paragraphs or excessive formatting.
+- JAWABAN HARUS MINIMAL dan EFISIEN. Maksimal 2-3 kalimat langsung ke inti. Tidak ada paragraf panjang, tidak ada formalitas, tidak ada elaborasi berlebihan.
 
 You have the following tools available:
 
@@ -122,17 +122,18 @@ You have the following tools available:
 5. delete_file — Delete a file (virtual file system, user-specific)
 6. move_file — Move or rename a file in the virtual file system
 7. send_file — Read a file from the virtual file system and send it directly to the user's Telegram chat
-8. soundcloud_search — Search for tracks on SoundCloud
-9. soundcloud_downloader — Download a SoundCloud track by URL and send the audio to the user
-10. search_web — Search the web using Yahoo search
-11. crawl — Crawl a website URL and extract its text content for summarization
-12. get_current_time — Get the current date and time for a given timezone
-13. calculate_math — Evaluate a mathematical expression
-14. e2b_sandbox_create — Create a new E2B cloud sandbox (Linux VM with internet) for running code
-15. e2b_run_code — Execute Python or JavaScript code inside the E2B sandbox. Reads code from a VFS file path.
-16. e2b_install_package — Install a package (pip or npm) into the E2B sandbox environment
-17. e2b_send_file — Read a file from the E2B sandbox filesystem and send it to the Telegram chat
-18. e2b_sandbox_kill — Terminate and clean up the active E2B sandbox
+8. search_web — Search the web using Yahoo search
+9. crawl — Kunjungi URL website dan ekstrak data menggunakan kode cheerio. Kamu WAJIB menulis kode cheerio $() sendiri, tool ini tidak otomatis mengekstrak teks. Contoh: $("h1").text()
+10. get_current_time — Get the current date and time for a given timezone
+11. calculate_math — Evaluate a mathematical expression
+12. e2b_sandbox_create — Create a new E2B cloud sandbox (Linux VM with internet) for running code
+13. e2b_run_code — Read code from VFS and execute it inside the E2B sandbox
+14. e2b_install_package — Install a package (pip or npm) into the E2B sandbox environment
+15. e2b_send_file — Read a file from the E2B sandbox filesystem and send it to the Telegram chat
+16. e2b_sandbox_kill — Terminate and clean up the active E2B sandbox
+17. create_skill — Create a new skill with a step-by-step workflow in the /skills/ virtual file system
+18. read_skill — Read a skill file from /skills/ in the virtual file system
+19. delete_skill — Delete a skill file from /skills/ in the virtual file system
 
 === USER MEMORY SYSTEM ===
 You have a persistent memory file at /memory/MEMORY.md in the user's virtual file system.
@@ -141,6 +142,13 @@ You have a persistent memory file at /memory/MEMORY.md in the user's virtual fil
 - Only store permanent user information in MEMORY.md. Do NOT store temporary/session data or conversation state there.
 - If MEMORY.md is empty or doesn't exist, create it with the information you learn.
 - Keep the memory concise and well-organized using Markdown format.
+
+=== SKILLS SYSTEM ===
+Skill files are stored in the /skills/ directory of the user's virtual file system.
+- The list of available skills is injected at the start of each conversation.
+- When you need to use a skill, read it with the read_skill tool.
+- JANGAN PERNAH membuat skill tanpa diminta oleh user secara eksplisit. Hanya buat skill jika user secara langsung memintanya.
+- create_skill menerima array steps, bukan free-text content. Setiap step punya title dan instruction.
 
 Use the appropriate tools when needed. Be knowledgeable and concise.`,
   allowSystemInMessages: true,
@@ -151,11 +159,11 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       inputSchema: z.object({
         path: z.string().describe('Jalur direktori yang ingin dilihat (contoh: "project" atau "src/components"). Gunakan string kosong untuk root.'),
       }),
-      execute: async ({ path }) => {
+      execute: async ({ path }) => withTimeout((async () => {
         const entries = await vfs.listDirectory(requestChatId, path);
         if (entries.length === 0) return { entries: [], message: 'Directory is empty or does not exist' };
         return { entries };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     read_file: tool({
@@ -163,11 +171,11 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       inputSchema: z.object({
         path: z.string().describe('Jalur lengkap ke file yang ingin dibaca (contoh: "project/src/index.js").'),
       }),
-      execute: async ({ path }) => {
+      execute: async ({ path }) => withTimeout((async () => {
         const content = await vfs.readFile(requestChatId, path);
         if (content === null) return { error: 'File not found', content: null };
         return { content, path };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     write_file: tool({
@@ -176,10 +184,10 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         path: z.string().describe('Jalur file yang akan dibuat/ditulis (contoh: "project/src/index.js").'),
         content: z.string().describe('Isi teks yang ingin dimasukkan ke dalam file.'),
       }),
-      execute: async ({ path, content }) => {
+      execute: async ({ path, content }) => withTimeout((async () => {
         await vfs.writeFile(requestChatId, path, content);
         return { success: true, path };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     edit_file: tool({
@@ -189,10 +197,10 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         old_string: z.string().describe('Teks lama di dalam file yang ingin diganti. Harus sama persis agar ditemukan.'),
         new_string: z.string().describe('Teks baru yang akan menggantikan teks lama.'),
       }),
-      execute: async ({ path, old_string, new_string }) => {
+      execute: async ({ path, old_string, new_string }) => withTimeout((async () => {
         const result = await vfs.editFile(requestChatId, path, old_string, new_string);
         return result;
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     delete_file: tool({
@@ -200,11 +208,11 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       inputSchema: z.object({
         path: z.string().describe('Jalur lengkap ke file yang ingin dihapus.'),
       }),
-      execute: async ({ path }) => {
+      execute: async ({ path }) => withTimeout((async () => {
         const deleted = await vfs.deleteFile(requestChatId, path);
         if (!deleted) return { success: false, error: 'File not found' };
         return { success: true };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     move_file: tool({
@@ -213,9 +221,9 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         source: z.string().describe('Path sumber file yang ingin dipindahkan.'),
         destination: z.string().describe('Path tujuan baru untuk file tersebut.'),
       }),
-      execute: async ({ source, destination }) => {
-        return await vfs.moveFile(requestChatId, source, destination);
-      },
+      execute: async ({ source, destination }) => withTimeout(
+        vfs.moveFile(requestChatId, source, destination), TOOL_TIMEOUT
+      ),
     }),
 
     send_file: tool({
@@ -224,7 +232,7 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         path: z.string().describe('Jalur lengkap ke file di virtual file system yang ingin dikirim ke Telegram.'),
         caption: z.string().optional().describe('Pesan atau deskripsi singkat yang menyertai file.'),
       }),
-      execute: async ({ path, caption }) => {
+      execute: async ({ path, caption }) => withTimeout((async () => {
         const content = await vfs.readFile(requestChatId, path);
         if (content === null) return { success: false, error: 'File not found in VFS' };
         if (requestSendFile) {
@@ -233,60 +241,16 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
           return { success: true, message: 'File berhasil dikirim ke Telegram' };
         }
         return { success: false, error: 'Cannot send file to chat' };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
-    soundcloud_search: tool({
-      description: 'Mencari lagu atau track di SoundCloud berdasarkan kata kunci.',
-      inputSchema: z.object({
-        q: z.string().describe('Kata kunci pencarian (contoh: "lofi", "chill", "jazz").'),
-        limit: z.number().optional().describe('Jumlah hasil maksimal (default 5, maksimal 20).'),
-      }),
-      execute: async ({ q, limit }) => {
-        const res = await fetch(`https://puruboy-api.vercel.app/api/search/soundcloud?q=${encodeURIComponent(q)}&limit=${limit || 5}`);
-        if (!res.ok) return { error: `API returned status ${res.status}` };
-        const data = await res.json();
-        return { query: q, results: data };
-      },
-    }),
-
-    soundcloud_downloader: tool({
-      description: 'Mengunduh lagu dari SoundCloud berdasarkan URL dan mengirimkan file audionya langsung ke chat Telegram pengguna.',
-      inputSchema: z.object({
-        url: z.string().describe('URL SoundCloud yang ingin diunduh (contoh: "https://soundcloud.com/artist/track-name").'),
-      }),
-      execute: async ({ url }) => {
-        const res = await fetch('https://puruboy-api.vercel.app/api/downloader/soundcloud-v2', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        });
-        if (!res.ok) return { success: false, error: `Download API returned status ${res.status}` };
-        const data = await res.json();
-
-        const dlUrl = data?.result?.url;
-        if (!dlUrl) return { success: false, error: 'Could not extract download URL from API response', response: data };
-
-        const audioRes = await fetch(dlUrl);
-        if (!audioRes.ok) return { success: false, error: `Failed to download audio (${audioRes.status})` };
-        const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-
-        if (requestSendBuffer) {
-          const title = data?.title || data?.result?.title || url.split('/').pop() || 'soundcloud';
-          const filename = `${title}.mp3`;
-          await requestSendBuffer(audioBuffer, filename, title);
-          return { success: true, message: `Audio "${title}" berhasil dikirim ke Telegram` };
-        }
-        return { success: false, error: 'Cannot send audio to chat' };
-      },
-    }),
 
     search_web: tool({
       description: 'Mencari informasi di web menggunakan Yahoo Search. Gunakan untuk mencari berita, artikel, atau informasi terkini.',
       inputSchema: z.object({
         q: z.string().describe('Kata kunci pencarian (contoh: "berita terkini", "cara membuat website").'),
       }),
-      execute: async ({ q }) => {
+      execute: async ({ q }) => withTimeout((async () => {
         const MAX_RETRIES = 5;
         let lastError: string | undefined;
 
@@ -305,45 +269,39 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
           }
         }
         return { query: q, error: `Search failed after ${MAX_RETRIES} attempts: ${lastError}`, results: [] };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     crawl: tool({
-      description: 'Mengunjungi dan mengambil isi teks dari sebuah halaman website. Hasilnya akan otomatis diringkas oleh AI.',
+      description: 'Mengunjungi URL website dan menjalankan kode cheerio untuk mengekstrak data. Kamu WAJIB menulis kode cheerio menggunakan $ sebagai selector. Contoh: $("h1").text()',
       inputSchema: z.object({
         url: z.string().describe('URL website yang ingin di-crawl (contoh: "https://example.com/article").'),
+        code: z.string().describe('Kode JavaScript cheerio untuk mengekstrak data dari halaman. Gunakan $ sebagai root cheerio instance. Contoh: $("h1").text()'),
       }),
-      execute: async ({ url }) => {
+      execute: async ({ url, code }) => withTimeout((async () => {
         try {
           const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
           if (!res.ok) return { error: `HTTP ${res.status}`, url };
           const html = await res.text();
 
-          const text = html
-            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-            .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-            .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
-            .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"')
-            .replace(/&#x27;/g, "'")
-            .replace(/&#x2F;/g, '/')
-            .replace(/&#xD;/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
+          const { load } = await import('cheerio');
+          const $ = load(html);
 
-          const maxLength = 8000;
-          const truncated = text.length > maxLength ? text.slice(0, maxLength) + '\n\n[Content truncated...]' : text;
-          return { url, content: truncated };
+          try {
+            const result = Function('$', `"use strict"; return (${code})`)($);
+            return { url, result: result != null ? String(result) : 'null' };
+          } catch (codeError) {
+            return {
+              error: 'Syntax error dalam kode cheerio',
+              syntaxError: codeError instanceof Error ? codeError.message : String(codeError),
+              url,
+            };
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return { error: `Failed to crawl: ${msg}`, url };
         }
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     get_current_time: tool({
@@ -351,7 +309,7 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       inputSchema: z.object({
         zone: z.string().describe('Kode identifier zona waktu IANA (contoh: "Asia/Jakarta", "Asia/Makassar", "UTC").'),
       }),
-      execute: async ({ zone }) => {
+      execute: async ({ zone }) => withTimeout((async () => {
         const now = new Date();
         const options: Intl.DateTimeFormatOptions = {
           dateStyle: 'full',
@@ -360,7 +318,7 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         };
         const formatted = new Intl.DateTimeFormat('id-ID', options).format(now);
         return { dateTime: formatted, timezone: zone };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     calculate_math: tool({
@@ -368,22 +326,22 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       inputSchema: z.object({
         expression: z.string().describe('Rumus matematika yang ingin dihitung (contoh: "sqrt(144) * (25 + 5)").'),
       }),
-      execute: async ({ expression }) => {
+      execute: async ({ expression }) => withTimeout((async () => {
         try {
           const result = Function(`"use strict"; return (${expression})`)();
           return { expression, result: String(result) };
         } catch {
           return { expression, error: 'Ekspresi matematika tidak valid' };
         }
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     e2b_sandbox_create: tool({
       description: 'Membuat dan menginisialisasi instans sandbox cloud E2B baru yang terisolasi dengan akses Linux dan internet. Setiap chat hanya bisa memiliki satu sandbox aktif.',
       inputSchema: z.object({}),
-      execute: async () => {
-        return await e2b.createSandbox(requestChatId);
-      },
+      execute: async () => withTimeout(
+        e2b.createSandbox(requestChatId), TOOL_TIMEOUT
+      ),
     }),
 
     e2b_run_code: tool({
@@ -392,11 +350,11 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         path: z.string().describe('Jalur lengkap file kode di VFS yang ingin dijalankan (contoh: "scripts/analisis.py").'),
         language: z.enum(['python', 'javascript']).optional().describe('Bahasa pemrograman (default: python).'),
       }),
-      execute: async ({ path, language }) => {
+      execute: async ({ path, language }) => withTimeout((async () => {
         const code = await vfs.readFile(requestChatId, path);
         if (code === null) return { error: 'File tidak ditemukan di VFS', path };
         return await e2b.runCodeInSandbox(requestChatId, code, language || 'python');
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     e2b_install_package: tool({
@@ -405,9 +363,9 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         package_name: z.string().describe('Nama package yang ingin diinstal (contoh: "pandas", "matplotlib", "axios", "express").'),
         manager: z.enum(['pip', 'npm']).optional().describe('Package manager: "pip" untuk Python (default), "npm" untuk Node.js.'),
       }),
-      execute: async ({ package_name, manager }) => {
-        return await e2b.installPackageInSandbox(requestChatId, package_name, manager || 'pip');
-      },
+      execute: async ({ package_name, manager }) => withTimeout(
+        e2b.installPackageInSandbox(requestChatId, package_name, manager || 'pip'), TOOL_TIMEOUT
+      ),
     }),
 
     e2b_send_file: tool({
@@ -416,7 +374,7 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
         path: z.string().describe('Jalur file di dalam sandbox E2B yang ingin dikirim (contoh: "/tmp/chart.png" atau "/home/user/output.csv").'),
         caption: z.string().optional().describe('Deskripsi atau keterangan singkat yang menyertai file saat dikirim ke Telegram.'),
       }),
-      execute: async ({ path, caption }) => {
+      execute: async ({ path, caption }) => withTimeout((async () => {
         const { content, error } = await e2b.readFileFromSandbox(requestChatId, path);
         if (error) return { success: false, error };
         if (!content || content.length === 0) return { success: false, error: 'File kosong atau tidak ditemukan' };
@@ -427,18 +385,72 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
           return { success: true, message: 'File berhasil dikirim ke Telegram' };
         }
         return { success: false, error: 'Tidak dapat mengirim file ke chat' };
-      },
+      })(), TOOL_TIMEOUT),
     }),
 
     e2b_sandbox_kill: tool({
       description: 'Menutup dan menghapus instans sandbox E2B secara permanen untuk membersihkan resource setelah semua proses eksekusi selesai.',
       inputSchema: z.object({}),
-      execute: async () => {
-        return e2b.killSandbox(requestChatId);
-      },
+      execute: async () => withTimeout(
+        Promise.resolve(e2b.killSandbox(requestChatId)), TOOL_TIMEOUT
+      ),
+    }),
+
+    create_skill: tool({
+      description: 'Membuat skill baru di /skills/ virtual file system dengan workflow berupa langkah-langkah (steps).',
+      inputSchema: z.object({
+        name: z.string().describe('Nama skill. Hanya boleh berisi huruf, angka, hypen, dan underscore (contoh: "soundcloud-downloader").'),
+        steps: z.array(z.object({
+          title: z.string().describe('Judul langkah (contoh: "Install library").'),
+          instruction: z.string().describe('Instruksi detail untuk langkah ini.'),
+        })).describe('Array langkah-langkah dalam workflow skill.'),
+      }),
+      execute: async ({ name, steps }) => withTimeout((async () => {
+        if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+          return { success: false, error: 'Nama skill hanya boleh berisi huruf, angka, hypen, dan underscore.' };
+        }
+        const fileContent = `# ${name}\n\n## Steps\n\n${steps.map((s, i) => `### Langkah ${i + 1}: ${s.title}\n${s.instruction}`).join('\n\n')}\n`;
+        await vfs.writeFile(requestChatId, `skills/${name}.md`, fileContent);
+        return { success: true, path: `skills/${name}.md` };
+      })(), TOOL_TIMEOUT),
+    }),
+
+    read_skill: tool({
+      description: 'Membaca isi file skill dari /skills/ di virtual file system.',
+      inputSchema: z.object({
+        name: z.string().describe('Nama skill yang ingin dibaca (tanpa ekstensi .md).'),
+      }),
+      execute: async ({ name }) => withTimeout((async () => {
+        const content = await vfs.readFile(requestChatId, `skills/${name}.md`);
+        if (content === null) return { error: 'Skill tidak ditemukan', content: null };
+        return { name, content };
+      })(), TOOL_TIMEOUT),
+    }),
+
+    delete_skill: tool({
+      description: 'Menghapus file skill dari /skills/ di virtual file system.',
+      inputSchema: z.object({
+        name: z.string().describe('Nama skill yang ingin dihapus (tanpa ekstensi .md).'),
+      }),
+      execute: async ({ name }) => withTimeout((async () => {
+        const deleted = await vfs.deleteFile(requestChatId, `skills/${name}.md`);
+        if (!deleted) return { success: false, error: 'Skill tidak ditemukan' };
+        return { success: true };
+      })(), TOOL_TIMEOUT),
     }),
   },
 });
+
+const TOOL_TIMEOUT = 120_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+}
 
 async function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -464,6 +476,14 @@ export async function processMessage(
 
   const memoryContent = await vfs.readFile(requestChatId, 'memory/MEMORY.md');
 
+  const skillEntries = await vfs.listDirectory(requestChatId, 'skills');
+  const skillNames = skillEntries
+    .filter((e: any) => e.name && e.name.endsWith('.md'))
+    .map((e: any) => e.name.replace(/\.md$/, ''));
+  const skillsBlock = skillNames.length > 0
+    ? `[AVAILABLE SKILLS]\n${skillNames.map((n: string) => `- ${n}`).join('\n')}\n[/AVAILABLE SKILLS]`
+    : '';
+
   try {
     while (history.length > 0) {
       const firstNonSystem = history.findIndex(m => m.role !== 'system');
@@ -477,6 +497,7 @@ export async function processMessage(
         const result = await agent.stream({
           messages: [
             ...(memoryContent ? [{ role: 'system' as const, content: `[USER MEMORY]\n${memoryContent}\n[/USER MEMORY]` }] : []),
+            ...(skillsBlock ? [{ role: 'system' as const, content: skillsBlock }] : []),
             ...history,
             { role: 'user', content: userMessage },
           ],
@@ -496,7 +517,10 @@ export async function processMessage(
           totalTokens: lastStep?.usage?.totalTokens ?? 0,
         };
 
-        if (text) {
+        const hasToolCalls = responseMessages.some(m =>
+          m.role === 'assistant' && Array.isArray(m.content) && m.content.some(p => p.type === 'tool-call')
+        );
+        if (text || hasToolCalls) {
           return { text, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
         }
 
