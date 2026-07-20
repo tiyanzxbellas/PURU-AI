@@ -519,6 +519,17 @@ export async function processMessage(
 
         const lastStepToolCalls = lastStep?.toolCalls;
         const lastStepHasToolCalls = lastStepToolCalls && lastStepToolCalls.length > 0;
+
+        const stepCount = steps?.length ?? 0;
+        if (stepCount >= 20) {
+          return {
+            text: '⚠️ Percakapan mencapai batas maksimum langkah. Silakan kirim `lanjut` atau `/ai lanjut` untuk melanjutkan percakapan dengan AI, atau masukkan prompt baru.',
+            responseMessages: responseMessages as ModelMessage[],
+            totalTokens: usage?.totalTokens ?? 0,
+            lastStepUsage,
+          };
+        }
+
         if (text || lastStepHasToolCalls) {
           return { text, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
         }
