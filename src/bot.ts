@@ -207,7 +207,11 @@ export function createBot() {
 
     if (sub === 'read') {
       const content = await vfs.readFile(userId, `skills/${skillName}.md`);
-      await safeReply(ctx, `📖 *${skillName}*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
+      const filename = `${skillName}.md`;
+      await ctx.replyWithDocument(
+        new InputFile(Buffer.from(content ?? '', 'utf-8'), filename),
+        { caption: `📄 ${filename}` },
+      );
     } else if (sub === 'delete') {
       await vfs.deleteFile(userId, `skills/${skillName}.md`);
       await safeReply(ctx, `🗑️ Skill "${skillName}" berhasil dihapus.`, { reply_to_message_id: ctx.msg?.message_id });
