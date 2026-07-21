@@ -1,13 +1,13 @@
 # PURU-AI Telegram Bot
 
-A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtual file system, user memory, SoundCloud/web tools, and per-user chat history.
+A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtual file system, user memory, AI tools, and per-user chat history.
 
 ## Features
 
 - **AI Chat** — Conversational AI using the Vercel AI SDK's `ToolLoopAgent` with streaming responses
 - **Virtual File System (VFS)** — Each user gets a personal file system stored in Firebase (Realtime Database), accessible via AI tools
 - **User Memory** — AI remembers user information by reading/writing `/memory/MEMORY.md` in the user's VFS
-- **SoundCloud** — Search and download tracks directly from Telegram
+- **E2B Sandbox** — Execute code in isolated cloud environments with automatic package installation
 - **Web Search** — Yahoo search integration with automatic retry (5x exponential backoff)
 - **Web Crawl** — Fetch and summarize website content
 - **Math & Time** — Built-in math evaluation and timezone-aware clock tools
@@ -25,9 +25,10 @@ A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtua
 | `/clear` | Clear conversation history |
 | `/token` | Show estimated token usage |
 | `/reset` | Delete all data (history + VFS files) |
+| `/skills` | List, read, or delete skills |
 | `/ai <message>` | Chat with AI (required in groups) |
 
-In **private chat**, just send any message to talk to the AI. In **group chat**, use `/ai` followed by your message.
+In **private chat**, just send any message to talk to the AI. In **group chat**, use `/ai` followed by your message. Use `/skills` to manage AI skills (list, read, delete).
 
 ## Architecture
 
@@ -35,7 +36,7 @@ In **private chat**, just send any message to talk to the AI. In **group chat**,
 src/
 ├── index.ts      — Entry point, starts bot + health server
 ├── bot.ts        — Telegram bot setup (commands, message handler, safeReply/safeEdit)
-├── agent.ts      — ToolLoopAgent with 12 tools + processMessage with retry + memory injection
+├── agent.ts      — ToolLoopAgent with 19 tools + processMessage with retry + memory injection
 ├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
 ├── tools.ts      — ToolNames type union
 ├── config.ts     — Config loader (env var BOT_TOKEN override)
@@ -49,13 +50,20 @@ src/
 3. **write_file** — Write/create file in VFS
 4. **edit_file** — Find-and-replace in a VFS file
 5. **delete_file** — Delete file from VFS
-6. **send_file** — Send a VFS file to Telegram chat
-7. **soundcloud_search** — Search SoundCloud tracks
-8. **soundcloud_downloader** — Download and send SoundCloud audio
-9. **search_web** — Yahoo web search
-10. **crawl** — Fetch and extract text from a webpage
-11. **get_current_time** — Current time in any IANA timezone
-12. **calculate_math** — Evaluate mathematical expressions
+6. **move_file** — Move or rename file in VFS
+7. **send_file** — Send a VFS file to Telegram chat
+8. **search_web** — Yahoo web search with retry
+9. **crawl** — Fetch and extract text from a webpage using cheerio
+10. **get_current_time** — Current time in any IANA timezone
+11. **calculate_math** — Evaluate mathematical expressions
+12. **e2b_sandbox_create** — Create isolated E2B sandbox
+13. **e2b_run_code** — Execute code from VFS in E2B sandbox
+14. **e2b_install_package** — Install packages in E2B sandbox
+15. **e2b_send_file** — Send file from E2B sandbox to Telegram
+16. **e2b_sandbox_kill** — Terminate E2B sandbox
+17. **create_skill** — Create new skill in /skills/ directory
+18. **use_skills** — Read and use skill from /skills/ directory
+19. **delete_skill** — Delete skill from /skills/ directory
 
 ## Tech Stack
 

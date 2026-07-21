@@ -12,6 +12,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^4.0.15",
     "@e2b/code-interpreter": "^2.6.1",
+    "@langchain/core": "^1.2.3",
     "ai": "^7.0.30",
     "cheerio": "^1.2.0",
     "grammy": "^1.34.0",

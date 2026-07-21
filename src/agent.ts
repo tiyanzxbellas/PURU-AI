@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { z } from 'zod';
 import * as vfs from './vfs.js';
 import * as e2b from './e2b.js';
+import { getSystemPrompt } from './instruction.js';
 
 const provider = createOpenAI({
   baseURL: config.ai.baseURL,
@@ -104,53 +105,6 @@ let requestSendBuffer: ((buffer: Buffer, filename: string, caption?: string) => 
 const agent = new ToolLoopAgent({
   model,
   temperature: 0,
-  instructions: `You are PURU-AI, a helpful Telegram bot assistant with a personal virtual file system stored in Firebase for each user.
-
-=== CRITICAL RULES ===
-- NEVER claim to have performed an action without calling the appropriate tool first.
-- You MUST use a tool to search, read, write, edit, delete, send, calculate, or execute anything.
-- If you write "I have searched" without calling search_web, that is a HALLUCINATION. STOP and call the tool.
-- No greetings or pleasantries. No "Halo!", "Tentu!", "Baiklah!", etc.
-- JAWABAN HARUS MINIMAL dan EFISIEN. Maksimal 2-3 kalimat langsung ke inti. Tidak ada paragraf panjang, tidak ada formalitas, tidak ada elaborasi berlebihan.
-
-You have the following tools available:
-
-1. list_directory — List files and folders in a directory (virtual file system, user-specific)
-2. read_file — Read a file's contents (virtual file system, user-specific)
-3. write_file — Create or overwrite a file (virtual file system, user-specific)
-4. edit_file — Find and replace text in a file (virtual file system, user-specific)
-5. delete_file — Delete a file (virtual file system, user-specific)
-6. move_file — Move or rename a file in the virtual file system
-7. send_file — Read a file from the virtual file system and send it directly to the user's Telegram chat
-8. search_web — Search the web using Yahoo search
-9. crawl — Kunjungi URL website dan ekstrak data menggunakan kode cheerio. Kamu WAJIB menulis kode cheerio $() sendiri, tool ini tidak otomatis mengekstrak teks. Contoh: $("h1").text()
-10. get_current_time — Get the current date and time for a given timezone
-11. calculate_math — Evaluate a mathematical expression
-12. e2b_sandbox_create — Create a new E2B cloud sandbox (Linux VM with internet) for running code
-13. e2b_run_code — Read code from VFS and execute it inside the E2B sandbox
-14. e2b_install_package — Install a package (pip or npm) into the E2B sandbox environment
-15. e2b_send_file — Read a file from the E2B sandbox filesystem and send it to the Telegram chat
-16. e2b_sandbox_kill — Terminate and clean up the active E2B sandbox
-17. create_skill — Create a new skill with a step-by-step workflow in the /skills/ virtual file system
-18. read_skill — Read a skill file from /skills/ in the virtual file system
-19. delete_skill — Delete a skill file from /skills/ in the virtual file system
-
-=== USER MEMORY SYSTEM ===
-You have a persistent memory file at /memory/MEMORY.md in the user's virtual file system.
-- At the start of each conversation, read /memory/MEMORY.md to recall information about the user (name, age, hobbies, preferences, etc.).
-- When the user tells you personal information about themselves, IMMEDIATELY save it to /memory/MEMORY.md using write_file. Do NOT wait for the user to ask you to save it.
-- Only store permanent user information in MEMORY.md. Do NOT store temporary/session data or conversation state there.
-- If MEMORY.md is empty or doesn't exist, create it with the information you learn.
-- Keep the memory concise and well-organized using Markdown format.
-
-=== SKILLS SYSTEM ===
-Skill files are stored in the /skills/ directory of the user's virtual file system.
-- The list of available skills is injected at the start of each conversation.
-- When you need to use a skill, read it with the read_skill tool.
-- JANGAN PERNAH membuat skill tanpa diminta oleh user secara eksplisit. Hanya buat skill jika user secara langsung memintanya.
-- create_skill menerima array steps, bukan free-text content. Setiap step punya title dan instruction.
-
-Use the appropriate tools when needed. Be knowledgeable and concise.`,
   allowSystemInMessages: true,
   stopWhen: isStepCount(20),
   tools: {
@@ -415,10 +369,10 @@ Use the appropriate tools when needed. Be knowledgeable and concise.`,
       })(), TOOL_TIMEOUT),
     }),
 
-    read_skill: tool({
-      description: 'Membaca isi file skill dari /skills/ di virtual file system.',
+    use_skills: tool({
+      description: 'Menggunakan skill dari /skills/ di virtual file system.',
       inputSchema: z.object({
-        name: z.string().describe('Nama skill yang ingin dibaca (tanpa ekstensi .md).'),
+        name: z.string().describe('Nama skill yang ingin digunakan (tanpa ekstensi .md).'),
       }),
       execute: async ({ name }) => withTimeout((async () => {
         const content = await vfs.readFile(requestChatId, `skills/${name}.md`);
@@ -481,8 +435,13 @@ export async function processMessage(
     .filter((e: any) => e.name && e.name.endsWith('.md'))
     .map((e: any) => e.name.replace(/\.md$/, ''));
   const skillsBlock = skillNames.length > 0
-    ? `[AVAILABLE SKILLS]\n${skillNames.map((n: string) => `- ${n}`).join('\n')}\n[/AVAILABLE SKILLS]`
+    ? skillNames.map((n: string) => `- ${n}`).join('\n')
     : '';
+
+  const systemPrompt = await getSystemPrompt(
+    memoryContent || undefined,
+    skillsBlock || undefined
+  );
 
   try {
     while (history.length > 0) {
@@ -496,8 +455,7 @@ export async function processMessage(
       try {
         const result = await agent.stream({
           messages: [
-            ...(memoryContent ? [{ role: 'system' as const, content: `[USER MEMORY]\n${memoryContent}\n[/USER MEMORY]` }] : []),
-            ...(skillsBlock ? [{ role: 'system' as const, content: skillsBlock }] : []),
+            { role: 'system' as const, content: systemPrompt },
             ...history,
             { role: 'user', content: userMessage },
           ],

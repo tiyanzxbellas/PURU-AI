@@ -5,4 +5,4 @@ export type ToolNames =
   | 'crawl' | 'get_current_time' | 'calculate_math'
   | 'e2b_sandbox_create' | 'e2b_run_code' | 'e2b_install_package'
   | 'e2b_send_file' | 'e2b_sandbox_kill'
-  | 'create_skill' | 'read_skill' | 'delete_skill';
+  | 'create_skill' | 'use_skills' | 'delete_skill';

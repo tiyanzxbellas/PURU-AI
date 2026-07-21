@@ -15,7 +15,7 @@
 ## Architecture
 - `src/index.ts` — entrypoint, starts health server then bot in a conflict-retry loop
 - `src/bot.ts` — grammY Bot setup, commands (`/start`, `/menu`, `/clear`, `/token`, `/reset`, `/ai`), message handlers
-- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) with 18 tools; uses `wrapLanguageModel` middleware for 18k token limit
+- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) with 19 tools; uses `wrapLanguageModel` middleware for 18k token limit
 - `src/vfs.ts` — per-user virtual file system stored in Firebase Realtime Database
 - `src/e2b.ts` — E2B sandbox (one per chat, 5 min timeout, auto-killed on expiry)
 - `src/server.ts` — HTTP health check on port 3000

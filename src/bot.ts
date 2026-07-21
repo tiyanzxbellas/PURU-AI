@@ -5,6 +5,7 @@ import { processMessage, estimateSimpleTokens } from './agent.js';
 import * as vfs from './vfs.js';
 
 const MAX_HISTORY_TOKENS = 2048;
+const MAX_MESSAGE_LENGTH = 4096;
 
 const MENU_TEXT =
   '📋 *Menu PURU-AI*\n\n' +
@@ -13,6 +14,7 @@ const MENU_TEXT =
   '• /menu — Menampilkan menu ini\n' +
   '• /clear — Menghapus riwayat percakapan\n' +
   '• /token — Melihat penggunaan token\n' +
+  '• /memory — Melihat MEMORY.md\n' +
   '• /reset — Reset semua data (riwayat & file)\n' +
   '• /skills — Melihat daftar skill\n' +
   '• /skills read <nomor> — Membaca isi skill\n' +
@@ -34,6 +36,26 @@ async function safeReply(ctx: Context, text: string, extra?: Record<string, any>
 }
 
 async function safeEdit(ctx: Context, chatId: number, messageId: number, text: string, extra?: Record<string, any>) {
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    // Edit placeholder with a note
+    const note = '⚠️ Respon terlalu panjang, dikirim sebagai file:';
+    try {
+      await ctx.api.editMessageText(chatId, messageId, note, { ...extra, parse_mode: 'Markdown' });
+    } catch (err) {
+      if (err instanceof GrammyError && err.error_code === 400 && err.description?.includes('parse entities')) {
+        await ctx.api.editMessageText(chatId, messageId, note, { ...extra, parse_mode: undefined });
+      } else {
+        throw err;
+      }
+    }
+    // Send the full response as a file
+    await ctx.replyWithDocument(
+      new InputFile(Buffer.from(text, 'utf-8'), 'respon.md'),
+      { caption: 'Respon lengkap terlalu panjang untuk ditampilkan di chat.' }
+    );
+    return;
+  }
+
   try {
     await ctx.api.editMessageText(chatId, messageId, text, { ...extra, parse_mode: 'Markdown' });
   } catch (err) {
@@ -146,6 +168,16 @@ export function createBot() {
     safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
+  bot.command('memory', async (ctx: Context) => {
+    const userId = ctx.from!.id;
+    const content = await vfs.readFile(userId, 'memory/MEMORY.md');
+    if (!content) {
+      await safeReply(ctx, 'Belum ada MEMORY.md.', { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+    await safeReply(ctx, `🧠 *MEMORY.md*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
+  });
+
   bot.command('skills', async (ctx: Context) => {
     const userId = ctx.from!.id;
     const fullText = ctx.message?.text || '';
@@ -184,7 +216,7 @@ export function createBot() {
     }
   });
 
-  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/reset', '/skills'];
+  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/memory', '/reset', '/skills'];
 
   bot.on('message:document', async (ctx: Context) => {
     const userId = ctx.from!.id;
