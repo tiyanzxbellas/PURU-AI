@@ -498,9 +498,7 @@ export async function processMessage(
       }
 
       if (attempt < MAX_RETRIES) {
-        const backoff = Math.min(3000 * Math.pow(2, attempt - 1) + Math.random() * 1000, 45000);
-        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${Math.round(backoff)}ms:`, lastError.message);
-        await delay(backoff);
+        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying immediately:`, lastError.message);
       }
     }
 
