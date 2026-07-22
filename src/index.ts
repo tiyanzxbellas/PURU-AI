@@ -29,7 +29,6 @@ async function start() {
         onStart: () => {
           console.log('Bot started!');
         },
-        drop_pending_updates: true,
       });
       break;
     } catch (err) {
