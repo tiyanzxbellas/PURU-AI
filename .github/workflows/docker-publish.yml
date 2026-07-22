@@ -39,6 +39,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/puru-ai:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/puru-ai:latest,${{ secrets.DOCKERHUB_USERNAME }}/puru-ai:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -7,7 +7,7 @@
     "dev": "nodemon --exec tsx src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "build:bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:node_modules/*",
+    "build:bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs --external:node_modules/*",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
