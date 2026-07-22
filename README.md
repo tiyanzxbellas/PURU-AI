@@ -86,27 +86,50 @@ cd telegram-ai-bot
 npm install
 ```
 
-3. Configure `config.js` with your bot token and AI endpoint:
-```js
-export default {
-  telegramBotToken: 'YOUR_BOT_TOKEN',
-  ai: {
-    baseURL: 'https://your-ai-endpoint/v1',
-    apiKey: 'your-api-key',
-    model: 'your-model',
-  },
-};
+3. Copy `.env.example` to `.env` and fill in your values:
+```
+cp .env.example .env
 ```
 
-4. Optionally override bot token via environment variable:
-```
-set BOT_TOKEN=your_token_here
-```
-
-5. Run:
+4. Run:
 ```
 npm run dev
 ```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `HOSTNAME` | Server bind address (e.g. `0.0.0.0`) |
+| `PORT` | Server port (e.g. `3000`) |
+| `BOT_TOKEN` | Telegram bot token |
+| `PUBLIC_RTDB` | Firebase Realtime Database base URL |
+| `E2B_APIKEY` | E2B API key for code execution |
+| `OPENAI_BASEURL` | OpenAI-compatible API base URL |
+| `OPENAI_APIKEY` | API key |
+| `OPENAI_MODEL` | Model name |
+
+All variables are **required**. The app will exit with an error if any are missing.
+
+## Docker
+
+Build and run with Docker:
+```bash
+docker build -t puru-ai .
+docker run -d --env-file .env -p 3000:3000 puru-ai
+```
+
+Or pull from Docker Hub:
+```bash
+docker pull purujawa/puru-ai:latest
+docker run -d --env-file .env -p 3000:3000 purujawa/puru-ai:latest
+```
+
+### CI/CD
+
+GitHub Actions automatically builds and pushes to Docker Hub on push to `main`. Required secrets:
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
 
 ## Scripts
 
@@ -115,6 +138,7 @@ npm run dev
 | `npm run dev` | Start with nodemon + tsx (hot reload) |
 | `npm start` | Start with tsx |
 | `npm run build` | Compile TypeScript |
+| `npm run build:bundle` | Bundle to single file with esbuild |
 | `npm run typecheck` | Check types without emitting |
 
 ## License

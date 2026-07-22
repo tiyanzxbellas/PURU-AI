@@ -8,9 +8,9 @@
 - No tests, no lint, no formatter configured
 
 ## Config & secrets
-- `config.js` at repo root holds secrets (bot token, AI endpoint, E2B API key). **Already committed.**
-- `config.d.ts` provides TS types; `src/config.ts` loads it, with `BOT_TOKEN` env var overriding `telegramBotToken`.
-- Firestore base URL is hardcoded in `src/vfs.ts:1`.
+- Configuration is handled via environment variables, validated at startup in `src/config.ts`.
+- `.env` file at repo root stores secrets.
+- Firebase RTDB base URL is loaded from `PUBLIC_RTDB` environment variable.
 
 ## Architecture
 - `src/index.ts` — entrypoint, starts health server then bot in a conflict-retry loop
