@@ -7,7 +7,7 @@
     "dev": "nodemon --exec tsx src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "build:bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.cjs --external:node_modules/*",
+    "build:bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.mjs --external:node_modules/* --banner:js=\"import{createRequire as __cr}from'module';const require=__cr(import.meta.url);\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
