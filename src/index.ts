@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { config } from './config.js';
 import { createBot } from './bot.js';
 import { startHealthServer } from './server.js';
 
