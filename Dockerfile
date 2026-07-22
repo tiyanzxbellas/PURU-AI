@@ -6,7 +6,6 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY dist/ ./dist/
-COPY config.js ./
 
 EXPOSE 3000
 
