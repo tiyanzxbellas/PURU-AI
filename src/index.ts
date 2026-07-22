@@ -7,8 +7,23 @@ startHealthServer();
 async function start() {
   const bot = createBot();
 
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/getMe`);
+    const data = await res.json() as any;
+    if (data.ok) {
+      console.log(`Telegram API connected: @${data.result.username}`);
+    } else {
+      console.error('Telegram API error:', data.description);
+      return;
+    }
+  } catch (err) {
+    console.error('Cannot reach Telegram API:', err);
+    return;
+  }
+
   while (true) {
     try {
+      console.log('Connecting to Telegram...');
       await bot.start({
         onStart: () => {
           console.log('Bot started!');
@@ -34,4 +49,6 @@ async function start() {
   }
 }
 
-start();
+start().catch((err) => {
+  console.error('Unhandled start error:', err);
+});
