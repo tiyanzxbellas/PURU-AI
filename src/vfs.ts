@@ -1,4 +1,6 @@
-const FIREBASE_BASE = 'https://puru-69425-default-rtdb.firebaseio.com';
+import { config } from './config.js';
+
+const FIREBASE_BASE = config.publicRtdb;
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');

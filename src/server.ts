@@ -1,6 +1,5 @@
 import { createServer } from 'node:http';
-
-const PORT = 3000;
+import { config } from './config.js';
 
 export function startHealthServer() {
   const server = createServer((_req, res) => {
@@ -13,8 +12,8 @@ export function startHealthServer() {
     }));
   });
 
-  server.listen(PORT, () => {
-    console.log(`Health server running on port ${PORT}`);
+  server.listen(config.port, config.hostname, () => {
+    console.log(`Health server running on ${config.hostname}:${config.port}`);
   });
 
   return server;
