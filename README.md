@@ -12,7 +12,6 @@ A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtua
 - **Web Crawl** — Fetch and summarize website content
 - **Math & Time** — Built-in math evaluation and timezone-aware clock tools
 - **Group Chat** — Use `/ai <message>` to interact with the bot in groups
-- **Token Limit** — Automatic prompt trimming when exceeding 18k tokens
 - **Exponential Backoff** — Retry up to 5 times with 1s→2s→4s→8s→16s delays on API failures
 - **Markdown Fallback** — Handles Telegram parse errors gracefully by retrying without parse mode
 
@@ -70,6 +69,7 @@ src/
 - [grammY](https://grammy.dev/) — Telegram Bot Framework
 - [Vercel AI SDK](https://sdk.vercel.ai/) — AI streaming, tool calling, `ToolLoopAgent`
 - [Firebase Realtime Database](https://firebase.google.com/) — User file storage (VFS)
+- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Message trimming utilities
 - [Zod](https://zod.dev/) — Schema validation for AI tool inputs
 - TypeScript, Node.js
 
@@ -100,8 +100,6 @@ npm run dev
 
 | Variable | Description |
 |----------|-------------|
-| `HOSTNAME` | Server bind address (e.g. `0.0.0.0`) |
-| `PORT` | Server port (e.g. `3000`) |
 | `BOT_TOKEN` | Telegram bot token |
 | `PUBLIC_RTDB` | Firebase Realtime Database base URL |
 | `E2B_APIKEY` | E2B API key for code execution |
@@ -109,7 +107,19 @@ npm run dev
 | `OPENAI_APIKEY` | API key |
 | `OPENAI_MODEL` | Model name |
 
-All variables are **required**. The app will exit with an error if any are missing.
+All variables above are **required**. The app will exit with an error if any are missing.
+
+### Optional Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOSTNAME` | `localhost` | Server bind address |
+| `PORT` | `3000` | Server port |
+| `TEMPERATURE` | `0` | AI model temperature |
+| `COMPACT_TOKEN` | `20480` | Max tokens for history compaction |
+| `MAX_LOOP` | `20` | Max agent iterations per request |
+
+These are optional. The app uses default values if not set.
 
 ## Docker
 

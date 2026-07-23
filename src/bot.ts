@@ -1,10 +1,11 @@
 import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage, pruneMessages } from 'ai';
+import { HumanMessage, AIMessage, SystemMessage, trimMessages, type BaseMessage } from '@langchain/core/messages';
 import { config } from './config.js';
-import { processMessage, estimateSimpleTokens } from './agent.js';
+import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
 
-const MAX_HISTORY_TOKENS = 2048;
+const MAX_HISTORY_TOKENS = config.compactToken;
 const MAX_MESSAGE_LENGTH = 4096;
 
 const MENU_TEXT =
@@ -67,37 +68,79 @@ async function safeEdit(ctx: Context, chatId: number, messageId: number, text: s
   }
 }
 
-async function compactHistory(history: ModelMessage[], userId: number, chatAccumulatedTokens: Map<number, number>) {
-  const pruned = pruneMessages({
+// Convert Vercel AI SDK ModelMessage to LangChain BaseMessage
+function toLangChainMessage(msg: ModelMessage): BaseMessage {
+  const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+  if (msg.role === 'system') return new SystemMessage(content);
+  if (msg.role === 'user') return new HumanMessage(content);
+  if (msg.role === 'assistant') return new AIMessage(content);
+  return new HumanMessage(content);
+}
+
+// Convert LangChain BaseMessage to Vercel AI SDK ModelMessage
+function toModelMessage(msg: BaseMessage): ModelMessage {
+  const role = msg.getType() === 'system' ? 'system' : msg.getType() === 'ai' ? 'assistant' : 'user';
+  return { role, content: msg.content as any } as ModelMessage;
+}
+
+// Token counter based on character count (chars / 4)
+function tokenCounter(msgs: BaseMessage[]): number {
+  let chars = 0;
+  for (const msg of msgs) {
+    const content = msg.content as any;
+    if (typeof content === 'string') {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part === 'string') chars += part.length;
+        else if (part && typeof part === 'object') {
+          if ('text' in part && typeof part.text === 'string') chars += part.text.length;
+          else if ('args' in part) chars += JSON.stringify(part.args || {}).length + 50;
+          else if ('result' in part) {
+            const r = typeof part.result === 'string' ? part.result : JSON.stringify(part.result || {});
+            chars += r.length;
+          }
+        }
+      }
+    }
+  }
+  return Math.round(chars / 4);
+}
+
+// Trim history to stay within token limit
+async function trimHistory(history: ModelMessage[]): Promise<ModelMessage[]> {
+  if (history.length === 0) return history;
+  
+  const lcMessages = history.map(toLangChainMessage);
+  const estimatedTokens = tokenCounter(lcMessages);
+  
+  if (estimatedTokens <= MAX_HISTORY_TOKENS) {
+    return history;
+  }
+  
+  const trimmed = await trimMessages(lcMessages, {
+    maxTokens: MAX_HISTORY_TOKENS,
+    tokenCounter,
+    strategy: 'last',
+    includeSystem: true,
+    allowPartial: false,
+  });
+  
+  const result = trimmed.map(toModelMessage);
+  const trimmedTokens = tokenCounter(trimmed);
+  console.log(`History trimmed from ${estimatedTokens} to ${trimmedTokens} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
+  
+  return result;
+}
+
+// Prune history to remove noise (reasoning, old tool-calls)
+function pruneHistory(history: ModelMessage[]): ModelMessage[] {
+  return pruneMessages({
     messages: history,
     reasoning: 'before-last-message',
     toolCalls: 'before-last-6-messages',
     emptyMessages: 'remove',
   });
-
-  let estimatedTokens = estimateSimpleTokens(pruned);
-  console.log(`[${userId}] History after prune: ${estimatedTokens} estimated tokens`);
-
-  if (estimatedTokens > MAX_HISTORY_TOKENS) {
-    const temp = [...pruned];
-    while (estimateSimpleTokens(temp) > MAX_HISTORY_TOKENS && temp.length > 1) {
-      const firstNonSystem = temp.findIndex(m => m.role !== 'system');
-      if (firstNonSystem >= 0) {
-        temp.splice(firstNonSystem, 1);
-      } else {
-        break;
-      }
-    }
-    history.length = 0;
-    history.push(...temp);
-    estimatedTokens = estimateSimpleTokens(temp);
-    console.log(`[${userId}] History trimmed to ${estimatedTokens} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
-  } else {
-    history.length = 0;
-    history.push(...pruned);
-  }
-
-  chatAccumulatedTokens.set(userId, estimatedTokens);
 }
 
 const INVALID_COMMAND_TEXT =
@@ -164,7 +207,7 @@ export function createBot() {
     if (lastStep) {
       reply += `🔢 Last step: ${lastStep.total.toLocaleString()} token (input: ${lastStep.input.toLocaleString()} + output: ${lastStep.output.toLocaleString()})\n\n`;
     }
-    reply += `_ℹ️ History otomatis dipotong jika estimasi > ${MAX_HISTORY_TOKENS.toLocaleString()} token_`;
+    reply += `_ℹ️ History otomatis di-prune & dipotong jika estimasi > ${MAX_HISTORY_TOKENS.toLocaleString()} token_`;
     safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
@@ -272,6 +315,12 @@ export function createBot() {
     }
     const history = chatHistories.get(userId)!;
 
+    // Prune then trim history before processing
+    const pruned = pruneHistory(history);
+    const trimmedHistory = await trimHistory(pruned);
+    history.length = 0;
+    history.push(...trimmedHistory);
+
     try {
       const filePreview = fileContent.length > 4000 ? fileContent.slice(0, 4000) + '\n...(truncated)' : fileContent;
       const injectedPrompt = prompt
@@ -304,7 +353,7 @@ export function createBot() {
       history.push(...responseMessages);
 
       chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
-      await compactHistory(history, userId, chatAccumulatedTokens);
+      chatAccumulatedTokens.set(userId, tokenCounter(history.map(toLangChainMessage)));
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
     } catch (error) {
@@ -346,6 +395,12 @@ export function createBot() {
     }
     const history = chatHistories.get(userId)!;
 
+    // Prune then trim history before processing
+    const pruned = pruneHistory(history);
+    const trimmedHistory = await trimHistory(pruned);
+    history.length = 0;
+    history.push(...trimmedHistory);
+
     let thinkingMsg;
     try {
       thinkingMsg = await ctx.reply('🤔 PURU-AI sedang berpikir...', { reply_to_message_id: ctx.msg?.message_id });
@@ -385,7 +440,7 @@ export function createBot() {
       history.push(...responseMessages);
 
       chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
-      await compactHistory(history, userId, chatAccumulatedTokens);
+      chatAccumulatedTokens.set(userId, tokenCounter(history.map(toLangChainMessage)));
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
     } catch (error) {

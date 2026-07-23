@@ -26,6 +26,7 @@ async function start() {
     try {
       console.log('Connecting to Telegram...');
       await bot.start({
+        drop_pending_updates: true,
         onStart: () => {
           console.log('Bot started!');
         },

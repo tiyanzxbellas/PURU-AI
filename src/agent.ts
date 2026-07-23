@@ -1,5 +1,4 @@
-import { ToolLoopAgent, tool, wrapLanguageModel, isStepCount, type ModelMessage, type LanguageModelMiddleware } from 'ai';
-import { type LanguageModelV4CallOptions } from '@ai-sdk/provider';
+import { ToolLoopAgent, tool, isStepCount, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
 import { z } from 'zod';
@@ -13,90 +12,7 @@ const provider = createOpenAI({
   name: 'puru',
 });
 
-export function estimateSimpleTokens(history: ModelMessage[]): number {
-  let chars = 0;
-  for (const msg of history) {
-    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-    if (typeof msg.content === 'string') {
-      chars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.type === 'text') chars += (part.text || '').length;
-      }
-    }
-  }
-  return Math.round(chars / 4);
-}
-
-export function estimatePromptTokens(prompt: Array<{ role: string; content: any }>): number {
-  let chars = 0;
-  for (const msg of prompt) {
-    if (typeof msg.content === 'string') {
-      chars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.type === 'text') chars += (part.text || '').length;
-        else if (part.type === 'reasoning') chars += (part.text || '').length;
-        else if (part.type === 'tool-call') chars += JSON.stringify(part.args || {}).length + (part.toolName || '').length + 50;
-        else if (part.type === 'tool-result') {
-          const r = typeof part.result === 'string' ? part.result : JSON.stringify(part.result || {});
-          chars += r.length;
-        }
-      }
-    }
-  }
-  return Math.round(chars / 4);
-}
-
-const MAX_PROMPT_TOKENS = 18000;
-
-const tokenLimitMiddleware: LanguageModelMiddleware = {
-  transformParams: async ({ params }: { params: LanguageModelV4CallOptions }) => {
-    const prompt = params.prompt;
-    if (estimatePromptTokens(prompt as any) <= MAX_PROMPT_TOKENS) return params;
-
-    const sysIdx = prompt.findIndex(m => m.role === 'system');
-    const kept = sysIdx >= 0 ? [prompt[sysIdx]] : [];
-
-    let tokens = estimatePromptTokens(kept as any);
-    for (let i = prompt.length - 1; i >= 0; i--) {
-      if (i === sysIdx) continue;
-      const msg = prompt[i];
-      const t = estimatePromptTokens([msg] as any);
-
-      if (tokens + t > MAX_PROMPT_TOKENS) {
-        if (Array.isArray(msg.content)) {
-          const stripped = {
-            ...msg,
-            content: (msg.content as any[]).filter((p: any) => p.type === 'text' || p.type === 'reasoning'),
-          } as typeof msg;
-          const st = estimatePromptTokens([stripped] as any);
-          if (tokens + st <= MAX_PROMPT_TOKENS) {
-            kept.splice(sysIdx >= 0 ? 1 : 0, 0, stripped);
-            tokens += st;
-            continue;
-          }
-        }
-        if (kept.length <= (sysIdx >= 0 ? 1 : 0)) {
-          kept.splice(sysIdx >= 0 ? 1 : 0, 0, msg);
-        }
-        break;
-      }
-
-      kept.splice(sysIdx >= 0 ? 1 : 0, 0, msg);
-      tokens += t;
-    }
-
-    params.prompt = kept;
-    return params;
-  },
-};
-
-const chatModel = provider.chat(config.ai.model);
-const model = wrapLanguageModel({
-  model: chatModel,
-  middleware: tokenLimitMiddleware,
-});
+const model = provider.chat(config.ai.model);
 
 let requestChatId = 0;
 let requestSendFile: ((content: string, filename: string, caption?: string) => Promise<void>) | null = null;
@@ -104,9 +20,9 @@ let requestSendBuffer: ((buffer: Buffer, filename: string, caption?: string) => 
 
 const agent = new ToolLoopAgent({
   model,
-  temperature: 0,
+  temperature: config.temperature,
   allowSystemInMessages: true,
-  stopWhen: isStepCount(20),
+  stopWhen: isStepCount(config.maxLoop),
   tools: {
     list_directory: tool({
       description: 'Membaca dan menampilkan daftar file serta folder di dalam direktori yang ditentukan di virtual file system.',
