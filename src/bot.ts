@@ -5,6 +5,7 @@ import { getEncoding } from 'js-tiktoken';
 import { config } from './config.js';
 import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
+import { getHistory, setHistory, deleteHistory, getTokens, setTokens } from './history.js';
 
 const encoder = getEncoding('o200k_base');
 
@@ -155,9 +156,6 @@ const INVALID_COMMAND_TEXT =
 export function createBot() {
   const bot = new Bot(config.telegramBotToken);
 
-  const chatHistories = new Map<number, ModelMessage[]>();
-  const chatTotalTokens = new Map<number, { total: number; input: number; output: number }>();
-
   bot.command('start', (ctx: Context) => {
     safeReply(
       ctx,
@@ -176,39 +174,37 @@ export function createBot() {
     safeReply(ctx, MENU_TEXT, { reply_to_message_id: ctx.msg?.message_id });
   });
 
-  bot.command('clear', (ctx: Context) => {
+  bot.command('clear', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    chatHistories.delete(userId);
-    chatTotalTokens.delete(userId);
+    await deleteHistory(userId);
     safeReply(ctx, 'Riwayat percakapan telah dihapus!', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('reset', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    chatHistories.delete(userId);
-    chatTotalTokens.delete(userId);
+    await deleteHistory(userId);
     await vfs.deleteAll(userId);
     safeReply(ctx, '🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('token', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    const lastStep = chatTotalTokens.get(userId);
-    const history = chatHistories.get(userId);
-    if ((!history || history.length === 0) && !lastStep) {
+    const lastStep = await getTokens(userId);
+    const history = await getHistory(userId);
+    if (history.length === 0 && !lastStep) {
       safeReply(ctx, 'Belum ada riwayat percakapan.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
 
-    const userCount = history ? history.filter(m => m.role === 'user').length : 0;
-    const assistantCount = history ? history.filter(m => m.role === 'assistant').length : 0;
+    const userCount = history.filter(m => m.role === 'user').length;
+    const assistantCount = history.filter(m => m.role === 'assistant').length;
 
     // Recalculate on-demand: raw history tokens
-    const rawTokens = history ? tokenCounter(history.map(toLangChainMessage)) : 0;
+    const rawTokens = history.length > 0 ? tokenCounter(history.map(toLangChainMessage)) : 0;
 
     // Recalculate on-demand: post-trim tokens (what will actually be sent)
     let trimmedTokens = rawTokens;
-    if (history && history.length > 0) {
+    if (history.length > 0) {
       const pruned = pruneHistory(history);
       const lcMessages = pruned.map(toLangChainMessage);
       if (tokenCounter(lcMessages) > MAX_HISTORY_TOKENS) {
@@ -336,10 +332,7 @@ export function createBot() {
       parse_mode: 'Markdown',
     });
 
-    if (!chatHistories.has(userId)) {
-      chatHistories.set(userId, []);
-    }
-    const history = chatHistories.get(userId)!;
+    const history = await getHistory(userId);
 
     // Prune then trim history before processing
     const pruned = pruneHistory(history);
@@ -378,7 +371,8 @@ export function createBot() {
       history.push({ role: 'user', content: injectedPrompt } as ModelMessage);
       history.push(...responseMessages);
 
-      chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await setTokens(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await setHistory(userId, history);
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
     } catch (error) {
@@ -415,10 +409,7 @@ export function createBot() {
       userMessage = rawText;
     }
 
-    if (!chatHistories.has(userId)) {
-      chatHistories.set(userId, []);
-    }
-    const history = chatHistories.get(userId)!;
+    const history = await getHistory(userId);
 
     // Prune then trim history before processing
     const pruned = pruneHistory(history);
@@ -464,7 +455,8 @@ export function createBot() {
       history.push({ role: 'user', content: userMessage } as ModelMessage);
       history.push(...responseMessages);
 
-      chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await setTokens(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
+      await setHistory(userId, history);
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
     } catch (error) {

@@ -37,6 +37,8 @@ interface Config {
   temperature: number;
   compactToken: number;
   maxLoop: number;
+  historyCacheMax: number;
+  historyCacheTtl: number;
 }
 
 export const config: Config = {
@@ -53,4 +55,6 @@ export const config: Config = {
   temperature: Number(process.env.TEMPERATURE) || 0,
   compactToken: Number(process.env.COMPACT_TOKEN) || 20480,
   maxLoop: Number(process.env.MAX_LOOP) || 20,
+  historyCacheMax: Number(process.env.HISTORY_CACHE_MAX) || 500,
+  historyCacheTtl: Number(process.env.HISTORY_CACHE_TTL) || 600_000,
 };

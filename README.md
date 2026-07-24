@@ -7,6 +7,7 @@ A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtua
 - **AI Chat** — Conversational AI using the Vercel AI SDK's `ToolLoopAgent` with streaming responses
 - **Virtual File System (VFS)** — Each user gets a personal file system stored in Firebase (Realtime Database), accessible via AI tools
 - **User Memory** — AI remembers user information by reading/writing `/memory/MEMORY.md` in the user's VFS
+- **Persistent History** — Chat history survives bot restarts via Firebase RTDB + LRU cache
 - **E2B Sandbox** — Execute code in isolated cloud environments with automatic package installation
 - **Web Search** — Yahoo search integration with automatic retry (5x exponential backoff)
 - **Web Crawl** — Fetch and summarize website content
@@ -37,6 +38,7 @@ src/
 ├── bot.ts        — Telegram bot setup (commands, message handler, safeReply/safeEdit)
 ├── agent.ts      — ToolLoopAgent with 19 tools + processMessage with retry + memory injection
 ├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
+├── history.ts    — Chat history (LRU cache + Firebase RTDB persist)
 ├── tools.ts      — ToolNames type union
 ├── config.ts     — Config loader (env var BOT_TOKEN override)
 └── server.ts     — HTTP health check server (port 3000)
@@ -70,6 +72,7 @@ src/
 - [Vercel AI SDK](https://sdk.vercel.ai/) — AI streaming, tool calling, `ToolLoopAgent`
 - [Firebase Realtime Database](https://firebase.google.com/) — User file storage (VFS)
 - [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Message trimming utilities
+- [lru-cache](https://www.npmjs.com/package/lru-cache) — In-memory LRU cache for chat history
 - [Zod](https://zod.dev/) — Schema validation for AI tool inputs
 - TypeScript, Node.js
 
@@ -118,6 +121,8 @@ All variables above are **required**. The app will exit with an error if any are
 | `TEMPERATURE` | `0` | AI model temperature |
 | `COMPACT_TOKEN` | `20480` | Max tokens for history compaction |
 | `MAX_LOOP` | `20` | Max agent iterations per request |
+| `HISTORY_CACHE_MAX` | `500` | Max users in LRU cache |
+| `HISTORY_CACHE_TTL` | `600000` | Cache TTL in ms (default 10 min) |
 
 These are optional. The app uses default values if not set.
 
