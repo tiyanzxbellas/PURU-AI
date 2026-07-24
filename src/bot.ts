@@ -1,9 +1,12 @@
 import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage, pruneMessages } from 'ai';
 import { HumanMessage, AIMessage, SystemMessage, trimMessages, type BaseMessage } from '@langchain/core/messages';
+import { getEncoding } from 'js-tiktoken';
 import { config } from './config.js';
 import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
+
+const encoder = getEncoding('o200k_base');
 
 const MAX_HISTORY_TOKENS = config.compactToken;
 const MAX_MESSAGE_LENGTH = 4096;
@@ -83,28 +86,31 @@ function toModelMessage(msg: BaseMessage): ModelMessage {
   return { role, content: msg.content as any } as ModelMessage;
 }
 
-// Token counter based on character count (chars / 4)
+// Token counter using tiktoken (o200k_base encoding)
 function tokenCounter(msgs: BaseMessage[]): number {
-  let chars = 0;
+  let count = 0;
   for (const msg of msgs) {
     const content = msg.content as any;
     if (typeof content === 'string') {
-      chars += content.length;
+      count += encoder.encode(content).length;
     } else if (Array.isArray(content)) {
       for (const part of content) {
-        if (typeof part === 'string') chars += part.length;
-        else if (part && typeof part === 'object') {
-          if ('text' in part && typeof part.text === 'string') chars += part.text.length;
-          else if ('args' in part) chars += JSON.stringify(part.args || {}).length + 50;
-          else if ('result' in part) {
+        if (typeof part === 'string') {
+          count += encoder.encode(part).length;
+        } else if (part && typeof part === 'object') {
+          if ('text' in part && typeof part.text === 'string') {
+            count += encoder.encode(part.text).length;
+          } else if ('args' in part) {
+            count += encoder.encode(JSON.stringify(part.args || {})).length + 1;
+          } else if ('result' in part) {
             const r = typeof part.result === 'string' ? part.result : JSON.stringify(part.result || {});
-            chars += r.length;
+            count += encoder.encode(r).length;
           }
         }
       }
     }
   }
-  return Math.round(chars / 4);
+  return count;
 }
 
 // Trim history to stay within token limit
@@ -150,7 +156,6 @@ export function createBot() {
   const bot = new Bot(config.telegramBotToken);
 
   const chatHistories = new Map<number, ModelMessage[]>();
-  const chatAccumulatedTokens = new Map<number, number>();
   const chatTotalTokens = new Map<number, { total: number; input: number; output: number }>();
 
   bot.command('start', (ctx: Context) => {
@@ -174,7 +179,6 @@ export function createBot() {
   bot.command('clear', (ctx: Context) => {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
-    chatAccumulatedTokens.delete(userId);
     chatTotalTokens.delete(userId);
     safeReply(ctx, 'Riwayat percakapan telah dihapus!', { reply_to_message_id: ctx.msg?.message_id });
   });
@@ -182,32 +186,54 @@ export function createBot() {
   bot.command('reset', async (ctx: Context) => {
     const userId = ctx.from!.id;
     chatHistories.delete(userId);
-    chatAccumulatedTokens.delete(userId);
     chatTotalTokens.delete(userId);
     await vfs.deleteAll(userId);
     safeReply(ctx, '🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.', { reply_to_message_id: ctx.msg?.message_id });
   });
 
-  bot.command('token', (ctx: Context) => {
+  bot.command('token', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    const historyTokens = chatAccumulatedTokens.get(userId) || 0;
     const lastStep = chatTotalTokens.get(userId);
     const history = chatHistories.get(userId);
-    if ((historyTokens === 0 || !history || history.length === 0) && !lastStep) {
+    if ((!history || history.length === 0) && !lastStep) {
       safeReply(ctx, 'Belum ada riwayat percakapan.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
+
     const userCount = history ? history.filter(m => m.role === 'user').length : 0;
     const assistantCount = history ? history.filter(m => m.role === 'assistant').length : 0;
+
+    // Recalculate on-demand: raw history tokens
+    const rawTokens = history ? tokenCounter(history.map(toLangChainMessage)) : 0;
+
+    // Recalculate on-demand: post-trim tokens (what will actually be sent)
+    let trimmedTokens = rawTokens;
+    if (history && history.length > 0) {
+      const pruned = pruneHistory(history);
+      const lcMessages = pruned.map(toLangChainMessage);
+      if (tokenCounter(lcMessages) > MAX_HISTORY_TOKENS) {
+        const trimmed = await trimMessages(lcMessages, {
+          maxTokens: MAX_HISTORY_TOKENS,
+          tokenCounter,
+          strategy: 'last',
+          includeSystem: true,
+          allowPartial: false,
+        });
+        trimmedTokens = tokenCounter(trimmed);
+      } else {
+        trimmedTokens = tokenCounter(lcMessages);
+      }
+    }
 
     let reply = '📊 *Penggunaan Token*\n\n' +
       `👤 User: ${userCount} pesan\n` +
       `🤖 Assistant: ${assistantCount} pesan\n` +
-      `📜 History: ${historyTokens.toLocaleString()} token (estimasi)\n`;
+      `📜 History (raw): ${rawTokens.toLocaleString()} token\n` +
+      `✂️ History (post-trim): ${trimmedTokens.toLocaleString()} token\n`;
     if (lastStep) {
       reply += `🔢 Last step: ${lastStep.total.toLocaleString()} token (input: ${lastStep.input.toLocaleString()} + output: ${lastStep.output.toLocaleString()})\n\n`;
     }
-    reply += `_ℹ️ History otomatis di-prune & dipotong jika estimasi > ${MAX_HISTORY_TOKENS.toLocaleString()} token_`;
+    reply += `_ℹ️ Batas: ${MAX_HISTORY_TOKENS.toLocaleString()} token. History di-prune & dipotong sebelum request. Estimasi tidak termasuk system prompt._`;
     safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
@@ -353,7 +379,6 @@ export function createBot() {
       history.push(...responseMessages);
 
       chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
-      chatAccumulatedTokens.set(userId, tokenCounter(history.map(toLangChainMessage)));
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
     } catch (error) {
@@ -440,7 +465,6 @@ export function createBot() {
       history.push(...responseMessages);
 
       chatTotalTokens.set(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
-      chatAccumulatedTokens.set(userId, tokenCounter(history.map(toLangChainMessage)));
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
     } catch (error) {
