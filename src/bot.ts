@@ -6,6 +6,8 @@ import { config } from './config.js';
 import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
 import { getHistory, setHistory, deleteHistory, getTokens, setTokens } from './history.js';
+import { listSkills, loadSkill, listSkillFiles, deleteSkill as deleteSkillLoader } from './skills-loader.js';
+import { installFromGitHub, migrateOldSkills } from './skills-registry.js';
 
 const encoder = getEncoding('o200k_base');
 
@@ -13,20 +15,23 @@ const MAX_HISTORY_TOKENS = config.compactToken;
 const MAX_MESSAGE_LENGTH = 4096;
 
 const MENU_TEXT =
-  '📋 *Menu PURU-AI*\n\n' +
-  'Perintah yang tersedia:\n' +
-  '• /start — Memulai bot\n' +
-  '• /menu — Menampilkan menu ini\n' +
-  '• /clear — Menghapus riwayat percakapan\n' +
-  '• /token — Melihat penggunaan token\n' +
-  '• /memory — Melihat MEMORY.md\n' +
-  '• /reset — Reset semua data (riwayat & file)\n' +
-  '• /skills — Melihat daftar skill\n' +
-  '• /skills read <nomor> — Membaca isi skill\n' +
-  '• /skills delete <nomor> — Menghapus skill\n' +
-  '• /ai <pesan> — Mengobrol dengan AI (khusus grup)\n\n' +
-  'Di chat pribadi, kirim pesan langsung untuk mengobrol dengan AI.\n' +
-  'Di grup, gunakan /ai diikuti pesan Anda.';
+  '*PURU-AI*\n\n' +
+  'CMD: /start\nDESC: "Memulai bot"\n\n' +
+  'CMD: /menu\nDESC: "Menampilkan menu ini"\n\n' +
+  'CMD: /clear\nDESC: "Menghapus riwayat percakapan"\n\n' +
+  'CMD: /token\nDESC: "Melihat penggunaan token"\n\n' +
+  'CMD: /memory\nDESC: "Melihat MEMORY.md"\n\n' +
+  'CMD: /reset\nDESC: "Reset semua data (riwayat & file)"\n\n' +
+  'CMD: /ai <pesan>\nDESC: "Mengobrol dengan AI (khusus grup)"\n\n' +
+  '---SKILLS-MENU---\n\n' +
+  'CMD: /skills\nDESC: "Melihat daftar skill"\n\n' +
+  'CMD: /skills search <query>\nDESC: "Mencari skill dari GitHub"\n\n' +
+  'CMD: /skills install <url>\nDESC: "Install skill dari GitHub"\n\n' +
+  'CMD: /skills info <nama>\nDESC: "Info detail skill"\n\n' +
+  'CMD: /skills read <nama>\nDESC: "Membaca isi skill"\n\n' +
+  'CMD: /skills delete <nama>\nDESC: "Menghapus skill"\n\n' +
+  'CMD: /skills migrate\nDESC: "Migrate skill lama ke format baru"\n\n' +
+  'Di chat pribadi, kirim pesan langsung untuk mengobrol dengan AI.\nDi grup, gunakan /ai diikuti pesan Anda.';
 
 async function safeReply(ctx: Context, text: string, extra?: Record<string, any>) {
   try {
@@ -248,41 +253,184 @@ export function createBot() {
     const fullText = ctx.message?.text || '';
     const args = fullText.replace(/^\/skills\s*/i, '').trim().split(/\s+/);
 
-    const entries = await vfs.listDirectory(userId, 'skills');
-    const skillNames = entries.filter(e => e.name && e.name.endsWith('.md')).map(e => e.name.replace(/\.md$/, ''));
-
     if (args.length === 0 || (args.length === 1 && args[0] === '')) {
-      if (skillNames.length === 0) {
-        await safeReply(ctx, 'Belum ada skill tersimpan.', { reply_to_message_id: ctx.msg?.message_id });
+      const skills = await listSkills(userId);
+
+      if (skills.length === 0) {
+        await safeReply(ctx, 'Belum ada skill tersimpan.\n\nGunakan:\n/skills search <query> — Mencari skill\n/skills install <url> — Install dari GitHub', { reply_to_message_id: ctx.msg?.message_id });
         return;
       }
-      await safeReply(ctx, `📚 *Daftar Skills:*\n\n${skillNames.map((n, i) => `• ${i + 1}. ${n}`).join('\n')}\n\nGunakan:\n/skills read <nomor>\n/skills delete <nomor>`, { reply_to_message_id: ctx.msg?.message_id });
+
+      const skillList = skills.map((s, i) => `${i + 1}. *${s.name}* — ${s.description.substring(0, 50)}${s.description.length > 50 ? '...' : ''}`).join('\n');
+      await safeReply(ctx, `📚 *Daftar Skills:*\n\n${skillList}\n\nGunakan:\n/skills info <nama> — Info detail\n/skills read <nama> — Baca isi\n/skills delete <nama> — Hapus`, { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
 
     const sub = args[0].toLowerCase();
-    const num = parseInt(args[1], 10);
 
-    if (isNaN(num) || num < 1 || num > skillNames.length) {
-      await safeReply(ctx, `Nomor tidak valid. Gunakan /skills untuk melihat daftar skill.`, { reply_to_message_id: ctx.msg?.message_id });
+    if (sub === 'search') {
+      const query = args.slice(1).join(' ');
+      if (!query) {
+        await safeReply(ctx, 'Gunakan: /skills search <query>', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      const thinkingMsg = await ctx.reply('🔍 Mencari skill...', { reply_to_message_id: ctx.msg?.message_id });
+
+      try {
+        const { searchSkills } = await import('./skills-registry.js');
+        const results = await searchSkills(query);
+
+        if (results.length === 0) {
+          await safeEdit(ctx, userId, thinkingMsg.message_id, `Tidak ditemukan skill untuk "${query}"`);
+          return;
+        }
+
+        const resultList = results.slice(0, 10).map((r, i) => `${i + 1}. *${r.displayName}*\n   ${r.summary.substring(0, 100)}...\n   ${r.url}`).join('\n\n');
+        await safeEdit(ctx, userId, thinkingMsg.message_id, `🔍 *Hasil Pencarian "${query}":*\n\n${resultList}\n\nGunakan /skills install <url> untuk menginstall`);
+      } catch (err) {
+        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal mencari skill. Silakan coba lagi.');
+      }
       return;
     }
 
-    const skillName = skillNames[num - 1];
+    if (sub === 'install') {
+      const url = args[1];
+      if (!url) {
+        await safeReply(ctx, 'Gunakan: /skills install <url>\n\nContoh:\n/skills install https://github.com/user/repo\n/skills install user/repo', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      const thinkingMsg = await ctx.reply('📦 Menginstall skill...', { reply_to_message_id: ctx.msg?.message_id });
+
+      try {
+        const result = await installFromGitHub(userId, url);
+
+        if (result.success) {
+          await safeEdit(ctx, userId, thinkingMsg.message_id, `✅ Skill "${result.name}" berhasil diinstall!\n\nPath: ${result.path}\n\nGunakan /skills info ${result.name} untuk melihat detail.`);
+        } else {
+          await safeEdit(ctx, userId, thinkingMsg.message_id, `❌ Gagal install: ${result.error}`);
+        }
+      } catch (err) {
+        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal install skill. Silakan coba lagi.');
+      }
+      return;
+    }
+
+    if (sub === 'info') {
+      const name = args[1];
+      if (!name) {
+        await safeReply(ctx, 'Gunakan: /skills info <nama>', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      const { loadSkillWithMetadata } = await import('./skills-loader.js');
+      const result = await loadSkillWithMetadata(userId, name);
+
+      if (!result) {
+        await safeReply(ctx, `Skill "${name}" tidak ditemukan.`, { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      const { metadata } = result;
+      let info = `📋 *Info Skill*\n\n`;
+      info += `*Nama:* ${metadata.name}\n`;
+      info += `*Deskripsi:* ${metadata.description}\n`;
+      if (metadata.homepage) {
+        info += `*Homepage:* ${metadata.homepage}\n`;
+      }
+      info += `\nGunakan:\n/skills read ${name} — Baca isi\n/skills delete ${name} — Hapus`;
+
+      await safeReply(ctx, info, { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
 
     if (sub === 'read') {
-      const content = await vfs.readFile(userId, `skills/${skillName}.md`);
-      const filename = `${skillName}.md`;
-      await ctx.replyWithDocument(
-        new InputFile(Buffer.from(content ?? '', 'utf-8'), filename),
-        { caption: `📄 ${filename}` },
-      );
-    } else if (sub === 'delete') {
-      await vfs.deleteFile(userId, `skills/${skillName}.md`);
-      await safeReply(ctx, `🗑️ Skill "${skillName}" berhasil dihapus.`, { reply_to_message_id: ctx.msg?.message_id });
-    } else {
-      await safeReply(ctx, 'Subperintah tidak dikenal. Gunakan: /skills read <nomor> atau /skills delete <nomor>', { reply_to_message_id: ctx.msg?.message_id });
+      const name = args[1];
+      const fileName = args[2];
+      if (!name) {
+        await safeReply(ctx, 'Gunakan: /skills read <nama> [file]', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      if (fileName) {
+        const filePath = `skills/${name}/${fileName}`;
+        const content = await vfs.readFile(userId, filePath);
+
+        if (!content) {
+          await safeReply(ctx, `File "${fileName}" tidak ditemukan di skill "${name}".`, { reply_to_message_id: ctx.msg?.message_id });
+          return;
+        }
+
+        const ext = fileName.split('.').pop() || 'txt';
+        const filename = `${name}-${fileName}`;
+        await ctx.replyWithDocument(
+          new InputFile(Buffer.from(content, 'utf-8'), filename),
+          { caption: `${filename}` },
+        );
+      } else {
+        const content = await loadSkill(userId, name);
+
+        if (!content) {
+          await safeReply(ctx, `Skill "${name}" tidak ditemukan.`, { reply_to_message_id: ctx.msg?.message_id });
+          return;
+        }
+
+        const files = await listSkillFiles(userId, name);
+        const fileList = files.length > 1
+          ? `\n\nFile tersedia:\n${files.map(f => `• ${f}`).join('\n')}\nGunakan: /skills read ${name} <file>`
+          : '';
+
+        const filename = `${name}.md`;
+        await ctx.replyWithDocument(
+          new InputFile(Buffer.from(content, 'utf-8'), filename),
+          { caption: `${filename}${fileList}` },
+        );
+      }
+      return;
     }
+
+    if (sub === 'delete') {
+      const name = args[1];
+      if (!name) {
+        await safeReply(ctx, 'Gunakan: /skills delete <nama>', { reply_to_message_id: ctx.msg?.message_id });
+        return;
+      }
+
+      const deleted = await deleteSkillLoader(userId, name);
+
+      if (deleted) {
+        await safeReply(ctx, `🗑️ Skill "${name}" berhasil dihapus.`, { reply_to_message_id: ctx.msg?.message_id });
+      } else {
+        await safeReply(ctx, `Skill "${name}" tidak ditemukan.`, { reply_to_message_id: ctx.msg?.message_id });
+      }
+      return;
+    }
+
+    if (sub === 'migrate') {
+      const thinkingMsg = await ctx.reply('🔄 Migrating skills...', { reply_to_message_id: ctx.msg?.message_id });
+
+      try {
+        const result = await migrateOldSkills(userId);
+
+        if (result.migrated > 0) {
+          let msg = `✅ Berhasil migrate ${result.migrated} skill`;
+          if (result.errors.length > 0) {
+            msg += `\n\n⚠️ Errors:\n${result.errors.join('\n')}`;
+          }
+          await safeEdit(ctx, userId, thinkingMsg.message_id, msg);
+        } else if (result.errors.length > 0) {
+          await safeEdit(ctx, userId, thinkingMsg.message_id, `❌ Tidak ada skill yang di-migrate:\n${result.errors.join('\n')}`);
+        } else {
+          await safeEdit(ctx, userId, thinkingMsg.message_id, 'Tidak ada skill lama yang perlu di-migrate.');
+        }
+      } catch (err) {
+        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal migrate skills. Silakan coba lagi.');
+      }
+      return;
+    }
+
+    await safeReply(ctx, 'Subperintah tidak dikenal.\n\nGunakan:\n/skills — Daftar skill\n/skills search <query> — Cari skill\n/skills install <url> — Install dari GitHub\n/skills info <nama> — Info detail\n/skills read <nama> — Baca isi\n/skills delete <nama> — Hapus\n/skills migrate — Migrate skill lama', { reply_to_message_id: ctx.msg?.message_id });
   });
 
   const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/memory', '/reset', '/skills'];

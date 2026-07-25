@@ -5,6 +5,8 @@ import { z } from 'zod';
 import * as vfs from './vfs.js';
 import * as e2b from './e2b.js';
 import { getSystemPrompt } from './instruction.js';
+import { listSkills, loadSkill, buildSkillsSummary, validateSkillName } from './skills-loader.js';
+import { searchSkills, installFromGitHub, installFromContent } from './skills-registry.js';
 
 const provider = createOpenAI({
   baseURL: config.ai.baseURL,
@@ -267,45 +269,71 @@ const agent = new ToolLoopAgent({
     }),
 
     create_skill: tool({
-      description: 'Membuat skill baru di /skills/ virtual file system dengan workflow berupa langkah-langkah (steps).',
+      description: 'Membuat skill baru di /skills/ virtual file system dengan metadata dan workflow.',
       inputSchema: z.object({
-        name: z.string().describe('Nama skill. Hanya boleh berisi huruf, angka, hypen, dan underscore (contoh: "soundcloud-downloader").'),
+        name: z.string().describe('Nama skill. Hanya boleh berisi huruf, angka, dan hyphen (contoh: "soundcloud-downloader").'),
+        description: z.string().describe('Deskripsi singkat tentang apa yang dilakukan skill ini.'),
         steps: z.array(z.object({
           title: z.string().describe('Judul langkah (contoh: "Install library").'),
           instruction: z.string().describe('Instruksi detail untuk langkah ini.'),
         })).describe('Array langkah-langkah dalam workflow skill.'),
       }),
-      execute: async ({ name, steps }) => withTimeout((async () => {
-        if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-          return { success: false, error: 'Nama skill hanya boleh berisi huruf, angka, hypen, dan underscore.' };
+      execute: async ({ name, description, steps }) => withTimeout((async () => {
+        const validationError = validateSkillName(name);
+        if (validationError) {
+          return { success: false, error: validationError };
         }
-        const fileContent = `# ${name}\n\n## Steps\n\n${steps.map((s, i) => `### Langkah ${i + 1}: ${s.title}\n${s.instruction}`).join('\n\n')}\n`;
-        await vfs.writeFile(requestChatId, `skills/${name}.md`, fileContent);
-        return { success: true, path: `skills/${name}.md` };
+
+        const body = `## Steps\n\n${steps.map((s, i) => `### Langkah ${i + 1}: ${s.title}\n${s.instruction}`).join('\n\n')}`;
+        const result = await installFromContent(requestChatId, name, description, body);
+        return result;
       })(), TOOL_TIMEOUT),
     }),
 
     use_skills: tool({
-      description: 'Menggunakan skill dari /skills/ di virtual file system.',
+      description: 'Membaca dan menggunakan skill dari /skills/ di virtual file system.',
       inputSchema: z.object({
         name: z.string().describe('Nama skill yang ingin digunakan (tanpa ekstensi .md).'),
       }),
       execute: async ({ name }) => withTimeout((async () => {
-        const content = await vfs.readFile(requestChatId, `skills/${name}.md`);
+        const content = await loadSkill(requestChatId, name);
         if (content === null) return { error: 'Skill tidak ditemukan', content: null };
         return { name, content };
       })(), TOOL_TIMEOUT),
     }),
 
     delete_skill: tool({
-      description: 'Menghapus file skill dari /skills/ di virtual file system.',
+      description: 'Menghapus skill dari /skills/ di virtual file system.',
       inputSchema: z.object({
-        name: z.string().describe('Nama skill yang ingin dihapus (tanpa ekstensi .md).'),
+        name: z.string().describe('Nama skill yang ingin dihapus.'),
       }),
       execute: async ({ name }) => withTimeout((async () => {
-        const deleted = await vfs.deleteFile(requestChatId, `skills/${name}.md`);
+        const skillPath = `skills/${name}/SKILL.md`;
+        const deleted = await vfs.deleteFile(requestChatId, skillPath);
         if (!deleted) return { success: false, error: 'Skill tidak ditemukan' };
         return { success: true };
+      })(), TOOL_TIMEOUT),
+    }),
+
+    search_skills: tool({
+      description: 'Mencari skill dari GitHub berdasarkan kata kunci.',
+      inputSchema: z.object({
+        query: z.string().describe('Kata kunci pencarian (contoh: "weather", "web scraping").'),
+      }),
+      execute: async ({ query }) => withTimeout((async () => {
+        const results = await searchSkills(query);
+        return { query, results, count: results.length };
+      })(), TOOL_TIMEOUT),
+    }),
+
+    install_skill: tool({
+      description: 'Menginstall skill dari URL GitHub repository.',
+      inputSchema: z.object({
+        url: z.string().describe('URL GitHub repository yang berisi skill (contoh: "https://github.com/user/repo" atau "user/repo").'),
+      }),
+      execute: async ({ url }) => withTimeout((async () => {
+        const result = await installFromGitHub(requestChatId, url);
+        return result;
       })(), TOOL_TIMEOUT),
     }),
   },
@@ -346,17 +374,11 @@ export async function processMessage(
 
   const memoryContent = await vfs.readFile(requestChatId, 'memory/MEMORY.md');
 
-  const skillEntries = await vfs.listDirectory(requestChatId, 'skills');
-  const skillNames = skillEntries
-    .filter((e: any) => e.name && e.name.endsWith('.md'))
-    .map((e: any) => e.name.replace(/\.md$/, ''));
-  const skillsBlock = skillNames.length > 0
-    ? skillNames.map((n: string) => `- ${n}`).join('\n')
-    : '';
+  const skillsSummary = await buildSkillsSummary(requestChatId);
 
   const systemPrompt = await getSystemPrompt(
     memoryContent || undefined,
-    skillsBlock || undefined
+    skillsSummary || undefined
   );
 
   try {

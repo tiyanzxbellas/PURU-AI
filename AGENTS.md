@@ -1,48 +1,50 @@
-# Agents.md
+# AGENTS.md
 
-## Quick start
+## Mulai Cepat
 - `npm run dev` — nodemon + tsx (hot reload)
 - `npm start` — tsx
 - `npm run build` — tsc
 - `npm run build:bundle` — esbuild single-file bundle
 - `npm run typecheck` — tsc --noEmit
-- No tests, no lint, no formatter configured
+- Tidak ada test, lint, atau formatter
 
-## Config & secrets
-- Configuration is handled via environment variables, validated at startup in `src/config.ts`.
-- `.env` file at repo root stores secrets.
-- Firebase RTDB base URL is loaded from `PUBLIC_RTDB` environment variable.
-- Optional configuration (with defaults):
-  - `HOSTNAME` — Server bind address (default: `localhost`)
-  - `PORT` — Server port (default: `3000`)
-  - `TEMPERATURE` — AI model temperature (default: `0`)
-  - `COMPACT_TOKEN` — Max tokens for history compaction (default: `20480`)
-  - `MAX_LOOP` — Max agent iterations per request (default: `20`)
-  - `HISTORY_CACHE_MAX` — Max users in LRU cache (default: `500`)
-  - `HISTORY_CACHE_TTL` — Cache TTL in ms (default: `600000` / 10 min)
+## Konfigurasi & Secrets
+- Konfigurasi menggunakan environment variables, divalidasi saat startup di `src/config.ts`.
+- File `.env` di root repo menyimpan secrets.
+- Firebase RTDB base URL dimuat dari environment variable `PUBLIC_RTDB`.
+- Konfigurasi opsional (dengan default):
+  - `HOSTNAME` — Alamat bind server (default: `localhost`)
+  - `PORT` — Port server (default: `3000`)
+  - `TEMPERATURE` — Temperature model AI (default: `0`)
+  - `COMPACT_TOKEN` — Token maksimal untuk kompresi history (default: `20480`)
+  - `MAX_LOOP` — Iterasi maksimal agent per request (default: `20`)
+  - `HISTORY_CACHE_MAX` — User maksimal di LRU cache (default: `500`)
+  - `HISTORY_CACHE_TTL` — TTL cache dalam ms (default: `600000` / 10 menit)
 
-## Architecture
-- `src/index.ts` — entrypoint, starts health server then bot in a conflict-retry loop
-- `src/bot.ts` — grammY Bot setup, commands (`/start`, `/menu`, `/clear`, `/token`, `/reset`, `/ai`), message handlers
-- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) with 19 tools; configurable `temperature` and `maxLoop`
-- `src/vfs.ts` — per-user virtual file system stored in Firebase Realtime Database
-- `src/history.ts` — chat history persistence (LRU cache + Firebase RTDB)
-- `src/e2b.ts` — E2B sandbox (one per chat, 5 min timeout, auto-killed on expiry)
-- `src/server.ts` — HTTP health check on port 3000
+## Arsitektur
+- `src/index.ts` — entrypoint, memulai health server lalu bot dalam conflict-retry loop
+- `src/bot.ts` — Setup grammY Bot, commands (`/start`, `/menu`, `/clear`, `/token`, `/reset`, `/ai`, `/skills`), message handlers
+- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) dengan 21 tools; `temperature` dan `maxLoop` bisa dikonfigurasi
+- `src/vfs.ts` — Virtual file system per-user disimpan di Firebase Realtime Database
+- `src/history.ts` — Persistensi chat history (LRU cache + Firebase RTDB)
+- `src/e2b.ts` — E2B sandbox (satu per chat, timeout 5 menit, auto-killed saat idle)
+- `src/skills-loader.ts` — Parsing metadata skill, listing, loading dari VFS
+- `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
+- `src/server.ts` — HTTP health check di port 3000
 
-## Key behaviors
-- **Retries**: API calls retry up to 8 times (3s→...→45s exp backoff). Web search retries 5 times (1s→16s).
-- **History persistence** (`history.ts`): Chat history stored in Firebase RTDB with LRU cache (max 500 users, 10 min TTL). Cache miss loads from Firebase; writes are synchronous (await). Empty arrays are not cached.
-- **History compaction** (`bot.ts:90`): After each response, prunes reasoning/tool-call parts and trims oldest non-system messages to stay under configurable `COMPACT_TOKEN` (default: 20480) estimated tokens, using `@langchain/core/messages.trimMessages`.
-- **Sequential processing**: Bot uses `bot.start()` (not `bot.run()`) — updates processed one at a time, keeping peak RAM low on 512MB machines.
-- **User memory**: agent reads `/memory/MEMORY.md` from VFS and injects it as a system message on every request.
-- **Safe reply/edit** (`bot.ts:21-43`): Markdown parsing errors are caught and retried without `parse_mode`.
-- **E2B sandbox**: create → write code to VFS → `e2b_run_code` reads from VFS. One sandbox per chat, 5 min idle kill.
+## Perilaku Penting
+- **Retry**: API call retry hingga 8 kali (3s→...→45s exponential backoff). Web search retry 5 kali (1s→16s).
+- **Persistensi history** (`history.ts`): Chat history disimpan di Firebase RTDB dengan LRU cache (maks 500 user, TTL 10 menit). Cache miss load dari Firebase; write bersifat synchronous (await). Array kosong tidak di-cache.
+- **Kompresi history** (`bot.ts:123`): Setelah setiap respons, memotong bagian reasoning/tool-call dan trimming pesan non-system tertua agar tetap di bawah `COMPACT_TOKEN` (default: 20480) token estimasi, menggunakan `@langchain/core/messages.trimMessages`.
+- **Pemrosesan sekuensial**: Bot menggunakan `bot.start()` (bukan `bot.run()`) — update diproses satu per satu, menjaga RAM peak tetap rendah di mesin 512MB.
+- **Memory user**: Agent membaca `/memory/MEMORY.md` dari VFS dan menginjectnya sebagai system message di setiap request.
+- **Safe reply/edit** (`bot.ts:36-78`): Error parsing Markdown ditangkap dan retry tanpa `parse_mode`.
+- **E2B sandbox**: create → tulis kode ke VFS → `e2b_run_code` membaca dari VFS. Satu sandbox per chat, kill setelah 5 menit idle.
 - **SoundCloud / web search** via `puruboy-api.vercel.app`.
 - **Math**: `Function()` constructor eval.
 
-## Conventions
-- All source imports use `.js` extension (ESM).
-- `"type": "module"` in package.json.
-- Agent instructions are in Indonesian; responses should be concise.
-- `src/tools.ts` exports a `ToolNames` union type — update when adding tools.
+## Konvensi
+- Semua import source menggunakan ekstensi `.js` (ESM).
+- `"type": "module"` di package.json.
+- Instruksi dan respons agent menggunakan Bahasa Indonesia; jawaban harus singkat.
+- `src/tools.ts` mengekspor type union `ToolNames` — update saat menambah tools.

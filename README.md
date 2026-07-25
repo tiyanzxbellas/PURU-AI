@@ -1,84 +1,94 @@
 # PURU-AI Telegram Bot
 
-A Telegram AI bot powered by the **Vercel AI SDK** with a Firebase-backed virtual file system, user memory, AI tools, and per-user chat history.
+Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system berbasis Firebase, memory user, AI tools, dan chat history per-user.
 
-## Features
+## Fitur
 
-- **AI Chat** — Conversational AI using the Vercel AI SDK's `ToolLoopAgent` with streaming responses
-- **Virtual File System (VFS)** — Each user gets a personal file system stored in Firebase (Realtime Database), accessible via AI tools
-- **User Memory** — AI remembers user information by reading/writing `/memory/MEMORY.md` in the user's VFS
-- **Persistent History** — Chat history survives bot restarts via Firebase RTDB + LRU cache
-- **E2B Sandbox** — Execute code in isolated cloud environments with automatic package installation
-- **Web Search** — Yahoo search integration with automatic retry (5x exponential backoff)
-- **Web Crawl** — Fetch and summarize website content
-- **Math & Time** — Built-in math evaluation and timezone-aware clock tools
-- **Group Chat** — Use `/ai <message>` to interact with the bot in groups
-- **Exponential Backoff** — Retry up to 5 times with 1s→2s→4s→8s→16s delays on API failures
-- **Markdown Fallback** — Handles Telegram parse errors gracefully by retrying without parse mode
+- **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
+- **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
+- **User Memory** — AI mengingat informasi user dengan membaca/menulis `/memory/MEMORY.md` di VFS user
+- **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
+- **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
+- **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
+- **Web Crawl** — Ambil dan ringkas konten website
+- **Math & Time** — Evaluasi matematika bawaan dan tools jam dengan timezone
+- **Group Chat** — Gunakan `/ai <pesan>` untuk berinteraksi dengan bot di grup
+- **Exponential Backoff** — Retry hingga 5 kali dengan delay 1s→2s→4s→8s→16s pada kegagalan API
+- **Markdown Fallback** — Menangani error parse Telegram dengan retry tanpa parse mode
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start the bot |
-| `/menu` | Show available commands |
-| `/clear` | Clear conversation history |
-| `/token` | Show estimated token usage |
-| `/reset` | Delete all data (history + VFS files) |
-| `/skills` | List, read, or delete skills |
-| `/ai <message>` | Chat with AI (required in groups) |
+| Command | Deskripsi |
+|---------|-----------|
+| `/start` | Memulai bot |
+| `/menu` | Menampilkan daftar perintah |
+| `/clear` | Menghapus riwayat percakapan |
+| `/token` | Melihat penggunaan token |
+| `/reset` | Menghapus semua data (riwayat + file VFS) |
+| `/skills` | Menampilkan daftar skill |
+| `/skills search <query>` | Mencari skill dari GitHub |
+| `/skills install <url>` | Install skill dari GitHub (dukung `https://github.com/...` atau `owner/repo`) |
+| `/skills info <nama>` | Menampilkan detail skill |
+| `/skills read <nama>` | Membaca isi skill |
+| `/skills delete <nama>` | Menghapus skill |
+| `/skills migrate` | Migrate skill lama ke format baru |
+| `/ai <pesan>` | Mengobrol dengan AI (wajib di grup) |
 
-In **private chat**, just send any message to talk to the AI. In **group chat**, use `/ai` followed by your message. Use `/skills` to manage AI skills (list, read, delete).
+Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**, gunakan `/ai` diikuti pesan Anda. Gunakan `/skills` untuk mengelola skill AI.
 
-## Architecture
+## Arsitektur
 
 ```
 src/
-├── index.ts      — Entry point, starts bot + health server
-├── bot.ts        — Telegram bot setup (commands, message handler, safeReply/safeEdit)
-├── agent.ts      — ToolLoopAgent with 19 tools + processMessage with retry + memory injection
+├── index.ts      — Entry point, memulai bot + health server
+├── bot.ts        — Setup Telegram bot (commands, message handler, safeReply/safeEdit)
+├── agent.ts      — ToolLoopAgent dengan 21 tools + processMessage dengan retry + memory injection
 ├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
 ├── history.ts    — Chat history (LRU cache + Firebase RTDB persist)
 ├── tools.ts      — ToolNames type union
 ├── config.ts     — Config loader (env var BOT_TOKEN override)
+├── skills-loader.ts — Parsing metadata skill, listing, loading
+├── skills-registry.ts — Instalasi skill dari GitHub dan pencarian
 └── server.ts     — HTTP health check server (port 3000)
 ```
 
-### Tools Available to AI
+### Tools yang Tersedia untuk AI
 
-1. **list_directory** — List files in VFS directory
-2. **read_file** — Read file contents from VFS
-3. **write_file** — Write/create file in VFS
-4. **edit_file** — Find-and-replace in a VFS file
-5. **delete_file** — Delete file from VFS
-6. **move_file** — Move or rename file in VFS
-7. **send_file** — Send a VFS file to Telegram chat
-8. **search_web** — Yahoo web search with retry
-9. **crawl** — Fetch and extract text from a webpage using cheerio
-10. **get_current_time** — Current time in any IANA timezone
-11. **calculate_math** — Evaluate mathematical expressions
-12. **e2b_sandbox_create** — Create isolated E2B sandbox
-13. **e2b_run_code** — Execute code from VFS in E2B sandbox
-14. **e2b_install_package** — Install packages in E2B sandbox
-15. **e2b_send_file** — Send file from E2B sandbox to Telegram
-16. **e2b_sandbox_kill** — Terminate E2B sandbox
-17. **create_skill** — Create new skill in /skills/ directory
-18. **use_skills** — Read and use skill from /skills/ directory
-19. **delete_skill** — Delete skill from /skills/ directory
+1. **list_directory** — Lihat daftar file/folder di direktori VFS
+2. **read_file** — Baca isi file dari VFS
+3. **write_file** — Tulis/buat file di VFS
+4. **edit_file** — Cari dan ganti teks dalam file VFS
+5. **delete_file** — Hapus file dari VFS
+6. **move_file** — Pindahkan atau ganti nama file di VFS
+7. **send_file** — Kirim file dari VFS ke chat Telegram
+8. **search_web** — Pencarian Yahoo dengan retry
+9. **crawl** — Ambil dan ekstrak teks dari halaman web menggunakan cheerio
+10. **get_current_time** — Waktu saat ini di timezone IANA manapun
+11. **calculate_math** — Evaluasi ekspresi matematika
+12. **e2b_sandbox_create** — Buat sandbox E2B terisolasi
+13. **e2b_run_code** — Eksekusi kode dari VFS di sandbox E2B
+14. **e2b_install_package** — Install package di sandbox E2B
+15. **e2b_send_file** — Kirim file dari sandbox E2B ke Telegram
+16. **e2b_sandbox_kill** — Tutup sandbox E2B
+17. **create_skill** — Buat skill baru dengan metadata di direktori /skills/
+18. **use_skills** — Baca dan gunakan skill dari direktori /skills/
+19. **delete_skill** — Hapus skill dari direktori /skills/
+20. **search_skills** — Cari skill dari GitHub
+21. **install_skill** — Install skill dari repository GitHub
 
 ## Tech Stack
 
 - [grammY](https://grammy.dev/) — Telegram Bot Framework
 - [Vercel AI SDK](https://sdk.vercel.ai/) — AI streaming, tool calling, `ToolLoopAgent`
-- [Firebase Realtime Database](https://firebase.google.com/) — User file storage (VFS)
-- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Message trimming utilities
-- [lru-cache](https://www.npmjs.com/package/lru-cache) — In-memory LRU cache for chat history
-- [Zod](https://zod.dev/) — Schema validation for AI tool inputs
+- [Firebase Realtime Database](https://firebase.google.com/) — Penyimpanan file user (VFS)
+- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Utilitas trimming pesan
+- [lru-cache](https://www.npmjs.com/package/lru-cache) — LRU cache in-memory untuk chat history
+- [Zod](https://zod.dev/) — Validasi schema untuk input AI tools
 - TypeScript, Node.js
 
-## Setup
+## Instalasi
 
-1. Clone the repo:
+1. Clone repo:
 ```
 git clone <repo-url>
 cd telegram-ai-bot
@@ -89,52 +99,52 @@ cd telegram-ai-bot
 npm install
 ```
 
-3. Copy `.env.example` to `.env` and fill in your values:
+3. Copy `.env.example` ke `.env` dan isi nilai Anda:
 ```
 cp .env.example .env
 ```
 
-4. Run:
+4. Jalankan:
 ```
 npm run dev
 ```
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `BOT_TOKEN` | Telegram bot token |
-| `PUBLIC_RTDB` | Firebase Realtime Database base URL |
-| `E2B_APIKEY` | E2B API key for code execution |
-| `OPENAI_BASEURL` | OpenAI-compatible API base URL |
+| Variable | Deskripsi |
+|----------|-----------|
+| `BOT_TOKEN` | Token bot Telegram |
+| `PUBLIC_RTDB` | Base URL Firebase Realtime Database |
+| `E2B_APIKEY` | API key E2B untuk eksekusi kode |
+| `OPENAI_BASEURL` | Base URL API OpenAI-compatible |
 | `OPENAI_APIKEY` | API key |
-| `OPENAI_MODEL` | Model name |
+| `OPENAI_MODEL` | Nama model |
 
-All variables above are **required**. The app will exit with an error if any are missing.
+Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kurang.
 
-### Optional Variables
+### Variable Opsional
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HOSTNAME` | `localhost` | Server bind address |
-| `PORT` | `3000` | Server port |
-| `TEMPERATURE` | `0` | AI model temperature |
-| `COMPACT_TOKEN` | `20480` | Max tokens for history compaction |
-| `MAX_LOOP` | `20` | Max agent iterations per request |
-| `HISTORY_CACHE_MAX` | `500` | Max users in LRU cache |
-| `HISTORY_CACHE_TTL` | `600000` | Cache TTL in ms (default 10 min) |
+| Variable | Default | Deskripsi |
+|----------|---------|-----------|
+| `HOSTNAME` | `localhost` | Alamat bind server |
+| `PORT` | `3000` | Port server |
+| `TEMPERATURE` | `0` | Temperature model AI |
+| `COMPACT_TOKEN` | `20480` | Token maksimal untuk kompresi history |
+| `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
+| `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |
+| `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
 
-These are optional. The app uses default values if not set.
+Variable ini opsional. Aplikasi menggunakan nilai default jika tidak diset.
 
 ## Docker
 
-Build and run with Docker:
+Build dan jalankan dengan Docker:
 ```bash
 docker build -t puru-ai .
 docker run -d --env-file .env -p 3000:3000 puru-ai
 ```
 
-Or pull from Docker Hub:
+Atau pull dari Docker Hub:
 ```bash
 docker pull purujawa/puru-ai:latest
 docker run -d --env-file .env -p 3000:3000 purujawa/puru-ai:latest
@@ -142,20 +152,20 @@ docker run -d --env-file .env -p 3000:3000 purujawa/puru-ai:latest
 
 ### CI/CD
 
-GitHub Actions automatically builds and pushes to Docker Hub on push to `main`. Required secrets:
+GitHub Actions secara otomatis build dan push ke Docker Hub saat push ke `main`. Secrets yang diperlukan:
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN`
 
 ## Scripts
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start with nodemon + tsx (hot reload) |
-| `npm start` | Start with tsx |
+| Command | Deskripsi |
+|---------|-----------|
+| `npm run dev` | Jalankan dengan nodemon + tsx (hot reload) |
+| `npm start` | Jalankan dengan tsx |
 | `npm run build` | Compile TypeScript |
-| `npm run build:bundle` | Bundle to single file with esbuild |
-| `npm run typecheck` | Check types without emitting |
+| `npm run build:bundle` | Bundle ke single file dengan esbuild |
+| `npm run typecheck` | Cek types tanpa emit |
 
-## License
+## Lisensi
 
 MIT
