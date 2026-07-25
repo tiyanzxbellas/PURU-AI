@@ -48,3 +48,9 @@
 - `"type": "module"` di package.json.
 - Instruksi dan respons agent menggunakan Bahasa Indonesia; jawaban harus singkat.
 - `src/tools.ts` mengekspor type union `ToolNames` — update saat menambah tools.
+
+## Git & Tagging
+- Setiap commit WAJIB diikuti dengan pembuatan **annotated tag** (`git tag -a`).
+- Format tag: `v<major>.<minor>.<patch>` — increment sesuai semver (patch untuk fix, minor untuk fitur, major untuk breaking change).
+- Pesan tag harus berisi **penjelasan detail** tentang perubahan yang dilakukan (bukan cuma judul commit).
+- Setelah commit dan tag dibuat, push semuanya: `git push origin main --follow-tags`.
