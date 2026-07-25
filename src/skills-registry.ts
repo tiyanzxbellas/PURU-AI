@@ -6,6 +6,7 @@ export interface GitHubRef {
   repo: string;
   ref: string;
   subPath: string;
+  explicitRef: boolean;
 }
 
 export interface SearchResult {
@@ -43,11 +44,13 @@ function parseGitHubRef(input: string): GitHubRef | null {
         repo: parts[1],
         ref: 'main',
         subPath: '',
+        explicitRef: false,
       };
 
       const treeIndex = parts.indexOf('tree');
       if (treeIndex !== -1 && treeIndex + 1 < parts.length) {
         ref.ref = parts[treeIndex + 1];
+        ref.explicitRef = true;
         if (treeIndex + 2 < parts.length) {
           ref.subPath = parts.slice(treeIndex + 2).join('/');
         }
@@ -67,6 +70,7 @@ function parseGitHubRef(input: string): GitHubRef | null {
     repo: parts[1],
     ref: 'main',
     subPath: '',
+    explicitRef: false,
   };
 
   if (parts.length > 2) {
@@ -124,6 +128,18 @@ async function fetchRawFile(owner: string, repo: string, ref: string, filePath: 
   return response.text();
 }
 
+async function getDefaultBranch(owner: string, repo: string): Promise<string> {
+  const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}`;
+  const response = await fetchWithRetry(url);
+
+  if (!response.ok) {
+    throw new Error(`GitHub API error: ${response.status}`);
+  }
+
+  const data = await response.json() as any;
+  return data.default_branch || 'main';
+}
+
 export async function searchSkills(query: string): Promise<SearchResult[]> {
   const results: SearchResult[] = [];
 
@@ -166,6 +182,15 @@ export async function installFromGitHub(chatId: number, url: string): Promise<In
 
   if (!ref) {
     return { success: false, error: 'URL GitHub tidak valid' };
+  }
+
+  if (!ref.explicitRef) {
+    try {
+      ref.ref = await getDefaultBranch(ref.owner, ref.repo);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: `Gagal resolve branch: ${errorMsg}` };
+    }
   }
 
   try {
