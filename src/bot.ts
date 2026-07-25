@@ -250,10 +250,9 @@ export function createBot() {
 
   bot.command('skills', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    const fullText = ctx.message?.text || '';
-    const args = fullText.replace(/^\/skills\s*/i, '').trim().split(/\s+/);
+    const args = ((ctx.match as string) || '').trim().split(/\s+/);
 
-    if (args.length === 0 || (args.length === 1 && args[0] === '')) {
+    if (args.length === 0 || args[0] === '') {
       const skills = await listSkills(userId);
 
       if (skills.length === 0) {
@@ -282,14 +281,14 @@ export function createBot() {
         const results = await searchSkills(query);
 
         if (results.length === 0) {
-          await safeEdit(ctx, userId, thinkingMsg.message_id, `Tidak ditemukan skill untuk "${query}"`);
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, `Tidak ditemukan skill untuk "${query}"`);
           return;
         }
 
         const resultList = results.slice(0, 10).map((r, i) => `${i + 1}. *${r.displayName}*\n   ${r.summary.substring(0, 100)}...\n   ${r.url}`).join('\n\n');
-        await safeEdit(ctx, userId, thinkingMsg.message_id, `🔍 *Hasil Pencarian "${query}":*\n\n${resultList}\n\nGunakan /skills install <url> untuk menginstall`);
+        await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, `🔍 *Hasil Pencarian "${query}":*\n\n${resultList}\n\nGunakan /skills install <url> untuk menginstall`);
       } catch (err) {
-        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal mencari skill. Silakan coba lagi.');
+        await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, 'Gagal mencari skill. Silakan coba lagi.');
       }
       return;
     }
@@ -307,12 +306,12 @@ export function createBot() {
         const result = await installFromGitHub(userId, url);
 
         if (result.success) {
-          await safeEdit(ctx, userId, thinkingMsg.message_id, `✅ Skill "${result.name}" berhasil diinstall!\n\nPath: ${result.path}\n\nGunakan /skills info ${result.name} untuk melihat detail.`);
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, `✅ Skill "${result.name}" berhasil diinstall!\n\nPath: ${result.path}\n\nGunakan /skills info ${result.name} untuk melihat detail.`);
         } else {
-          await safeEdit(ctx, userId, thinkingMsg.message_id, `❌ Gagal install: ${result.error}`);
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, `❌ Gagal install: ${result.error}`);
         }
       } catch (err) {
-        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal install skill. Silakan coba lagi.');
+        await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, 'Gagal install skill. Silakan coba lagi.');
       }
       return;
     }
@@ -418,14 +417,14 @@ export function createBot() {
           if (result.errors.length > 0) {
             msg += `\n\n⚠️ Errors:\n${result.errors.join('\n')}`;
           }
-          await safeEdit(ctx, userId, thinkingMsg.message_id, msg);
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, msg);
         } else if (result.errors.length > 0) {
-          await safeEdit(ctx, userId, thinkingMsg.message_id, `❌ Tidak ada skill yang di-migrate:\n${result.errors.join('\n')}`);
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, `❌ Tidak ada skill yang di-migrate:\n${result.errors.join('\n')}`);
         } else {
-          await safeEdit(ctx, userId, thinkingMsg.message_id, 'Tidak ada skill lama yang perlu di-migrate.');
+          await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, 'Tidak ada skill lama yang perlu di-migrate.');
         }
       } catch (err) {
-        await safeEdit(ctx, userId, thinkingMsg.message_id, 'Gagal migrate skills. Silakan coba lagi.');
+        await safeEdit(ctx, thinkingMsg.chat.id, thinkingMsg.message_id, 'Gagal migrate skills. Silakan coba lagi.');
       }
       return;
     }
