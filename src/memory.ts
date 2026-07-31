@@ -1,4 +1,4 @@
-import { generateText, type ModelMessage } from 'ai';
+import { streamText, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
 import * as vfs from './vfs.js';
@@ -47,12 +47,16 @@ export async function updateMemory(chatId: number, recentMessages: ModelMessage[
       .filter(Boolean)
       .join('\n');
 
-    const { text } = await generateText({
+    let streamError: unknown = null;
+    const result = streamText({
       model,
       system: MEMORY_PROMPT,
       prompt: `MEMORY.md lama:\n${current || '(kosong)'}\n\nPercakapan terbaru:\n${historyText || '(kosong)'}`,
       maxOutputTokens: MEMORY_MAX_OUTPUT,
+      onError: ({ error }) => { streamError = error; },
     });
+    const text = await result.text;
+    if (streamError) throw streamError instanceof Error ? streamError : new Error(String(streamError));
 
     const trimmed = text.trim();
     if (!trimmed) return null;

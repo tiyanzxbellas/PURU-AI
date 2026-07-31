@@ -31,7 +31,7 @@
 - `src/e2b.ts` — E2B sandbox (satu per chat, timeout 5 menit, auto-killed saat idle)
 - `src/skills-loader.ts` — Parsing metadata skill, listing, loading dari VFS
 - `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
-- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `generateText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`.
+- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `streamText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`. Memakai `streamText` (bukan `generateText`) karena proxy AI bisa membalas format SSE bahkan untuk request non-streaming.
 - `src/server.ts` — HTTP health check di port 3000
 
 ## Perilaku Penting

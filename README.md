@@ -51,7 +51,7 @@ src/
 ├── config.ts     — Config loader (env var BOT_TOKEN override)
 ├── skills-loader.ts — Parsing metadata skill, listing, loading
 ├── skills-registry.ts — Instalasi skill dari GitHub dan pencarian
-├── memory.ts     — Auto-update MEMORY.md internal (generateText)
+├── memory.ts     — Auto-update MEMORY.md internal (streamText)
 └── server.ts     — HTTP health check server (port 3000)
 ```
 
