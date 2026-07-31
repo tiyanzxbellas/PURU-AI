@@ -1,9 +1,8 @@
 import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage, pruneMessages } from 'ai';
-import { HumanMessage, AIMessage, SystemMessage, trimMessages, type BaseMessage } from '@langchain/core/messages';
 import { getEncoding } from 'js-tiktoken';
 import { config } from './config.js';
-import { processMessage } from './agent.js';
+import { processMessage, summarizeHistory } from './agent.js';
 import * as vfs from './vfs.js';
 import { getHistory, setHistory, deleteHistory, getTokens, setTokens } from './history.js';
 import { listSkills, loadSkill, listSkillFiles, deleteSkill as deleteSkillLoader } from './skills-loader.js';
@@ -77,25 +76,24 @@ async function safeEdit(ctx: Context, chatId: number, messageId: number, text: s
   }
 }
 
-// Convert Vercel AI SDK ModelMessage to LangChain BaseMessage
-function toLangChainMessage(msg: ModelMessage): BaseMessage {
-  const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-  if (msg.role === 'system') return new SystemMessage(content);
-  if (msg.role === 'user') return new HumanMessage(content);
-  if (msg.role === 'assistant') return new AIMessage(content);
-  return new HumanMessage(content);
+// Guarantee the first non-system message is a user message (avoids API error 400).
+// Leading system messages are preserved.
+function ensureStartsWithUser(msgs: ModelMessage[]): ModelMessage[] {
+  const result = [...msgs];
+  let i = 0;
+  while (i < result.length && result[i].role === 'system') i++;
+  while (i < result.length && result[i].role !== 'user') {
+    result.splice(i, 1);
+  }
+  return result;
 }
 
-// Convert LangChain BaseMessage to Vercel AI SDK ModelMessage
-function toModelMessage(msg: BaseMessage): ModelMessage {
-  const role = msg.getType() === 'system' ? 'system' : msg.getType() === 'ai' ? 'assistant' : 'user';
-  return { role, content: msg.content as any } as ModelMessage;
-}
-
-// Token counter using tiktoken (o200k_base encoding)
-function tokenCounter(msgs: BaseMessage[]): number {
+// Count tokens for conversation context: only user & assistant text
+// (system, tool results, and tool-call args are NOT counted)
+function countConvTokens(msgs: ModelMessage[]): number {
   let count = 0;
   for (const msg of msgs) {
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
     const content = msg.content as any;
     if (typeof content === 'string') {
       count += encoder.encode(content).length;
@@ -103,15 +101,8 @@ function tokenCounter(msgs: BaseMessage[]): number {
       for (const part of content) {
         if (typeof part === 'string') {
           count += encoder.encode(part).length;
-        } else if (part && typeof part === 'object') {
-          if ('text' in part && typeof part.text === 'string') {
-            count += encoder.encode(part.text).length;
-          } else if ('args' in part) {
-            count += encoder.encode(JSON.stringify(part.args || {})).length + 1;
-          } else if ('result' in part) {
-            const r = typeof part.result === 'string' ? part.result : JSON.stringify(part.result || {});
-            count += encoder.encode(r).length;
-          }
+        } else if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
+          count += encoder.encode(part.text).length;
         }
       }
     }
@@ -119,30 +110,26 @@ function tokenCounter(msgs: BaseMessage[]): number {
   return count;
 }
 
-// Trim history to stay within token limit
-async function trimHistory(history: ModelMessage[]): Promise<ModelMessage[]> {
-  if (history.length === 0) return history;
-  
-  const lcMessages = history.map(toLangChainMessage);
-  const estimatedTokens = tokenCounter(lcMessages);
-  
-  if (estimatedTokens <= MAX_HISTORY_TOKENS) {
-    return history;
+// Remove oldest non-system messages until under the token limit,
+// always keeping the last 2 conversation messages + all system messages
+function trimByRemoval(history: ModelMessage[]): ModelMessage[] {
+  const systemMsgs = history.filter(m => m.role === 'system');
+  const nonSystem = history.filter(m => m.role !== 'system');
+
+  const kept: ModelMessage[] = [];
+  let convKept = 0;
+
+  for (let i = nonSystem.length - 1; i >= 0; i--) {
+    const msg = nonSystem[i];
+    const isConv = msg.role === 'user' || msg.role === 'assistant';
+    if (isConv) {
+      if (convKept >= 2 && countConvTokens([...kept, msg]) > MAX_HISTORY_TOKENS) break;
+      convKept++;
+    }
+    kept.unshift(msg);
   }
-  
-  const trimmed = await trimMessages(lcMessages, {
-    maxTokens: MAX_HISTORY_TOKENS,
-    tokenCounter,
-    strategy: 'last',
-    includeSystem: true,
-    allowPartial: false,
-  });
-  
-  const result = trimmed.map(toModelMessage);
-  const trimmedTokens = tokenCounter(trimmed);
-  console.log(`History trimmed from ${estimatedTokens} to ${trimmedTokens} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
-  
-  return result;
+
+  return [...systemMsgs, ...ensureStartsWithUser(kept)];
 }
 
 // Prune history to remove noise (reasoning, old tool-calls)
@@ -153,6 +140,33 @@ function pruneHistory(history: ModelMessage[]): ModelMessage[] {
     toolCalls: 'before-last-6-messages',
     emptyMessages: 'remove',
   });
+}
+
+// Trim history to stay within token limit (custom, no LangChain round-trip).
+// If only a few conversation messages remain, summarize them into key points.
+async function trimHistory(history: ModelMessage[]): Promise<ModelMessage[]> {
+  if (history.length === 0) return history;
+
+  const estimatedTokens = countConvTokens(history);
+  if (estimatedTokens <= MAX_HISTORY_TOKENS) {
+    return ensureStartsWithUser(history);
+  }
+
+  const convCount = history.filter(m => m.role === 'user' || m.role === 'assistant').length;
+
+  if (convCount < 5) {
+    const summary = await summarizeHistory(history);
+    if (summary) {
+      const systemMsgs = history.filter(m => m.role === 'system');
+      const result: ModelMessage[] = [...systemMsgs, { role: 'user', content: summary }];
+      console.log(`History summarized from ${estimatedTokens} to ${countConvTokens(result)} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
+      return ensureStartsWithUser(result);
+    }
+  }
+
+  const result = trimByRemoval(history);
+  console.log(`History trimmed from ${estimatedTokens} to ${countConvTokens(result)} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
+  return result;
 }
 
 const INVALID_COMMAND_TEXT =
@@ -204,25 +218,18 @@ export function createBot() {
     const userCount = history.filter(m => m.role === 'user').length;
     const assistantCount = history.filter(m => m.role === 'assistant').length;
 
-    // Recalculate on-demand: raw history tokens
-    const rawTokens = history.length > 0 ? tokenCounter(history.map(toLangChainMessage)) : 0;
+    // Recalculate on-demand: raw history tokens (user & assistant text only)
+    const rawTokens = history.length > 0 ? countConvTokens(history) : 0;
 
     // Recalculate on-demand: post-trim tokens (what will actually be sent)
     let trimmedTokens = rawTokens;
     if (history.length > 0) {
       const pruned = pruneHistory(history);
-      const lcMessages = pruned.map(toLangChainMessage);
-      if (tokenCounter(lcMessages) > MAX_HISTORY_TOKENS) {
-        const trimmed = await trimMessages(lcMessages, {
-          maxTokens: MAX_HISTORY_TOKENS,
-          tokenCounter,
-          strategy: 'last',
-          includeSystem: true,
-          allowPartial: false,
-        });
-        trimmedTokens = tokenCounter(trimmed);
+      const prunedTokens = countConvTokens(pruned);
+      if (prunedTokens > MAX_HISTORY_TOKENS) {
+        trimmedTokens = countConvTokens(trimByRemoval(pruned));
       } else {
-        trimmedTokens = tokenCounter(lcMessages);
+        trimmedTokens = prunedTokens;
       }
     }
 

@@ -1,4 +1,4 @@
-import { ToolLoopAgent, tool, isStepCount, type ModelMessage } from 'ai';
+import { ToolLoopAgent, tool, isStepCount, generateText, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
 import { z } from 'zod';
@@ -451,6 +451,66 @@ export async function processMessage(
     requestChatId = 0;
     requestSendFile = null;
     requestSendBuffer = null;
+  }
+}
+
+function extractMessageText(msg: ModelMessage): string {
+  const content = msg.content as any;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: any) => p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string')
+      .map((p: any) => p.text)
+      .join('\n');
+  }
+  return '';
+}
+
+export async function summarizeHistory(history: ModelMessage[]): Promise<string | null> {
+  try {
+    const parts = history
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => extractMessageText(m))
+      .filter(t => t.trim().length > 0);
+
+    let transcript = parts.join('\n\n');
+    if (!transcript.trim()) return null;
+
+    if (transcript.length > 12000) {
+      transcript = transcript.slice(0, 9000) + '\n\n...(bagian tengah dipotong)...\n\n' + transcript.slice(-3000);
+    }
+
+    const result = await generateText({
+      model,
+      temperature: 0.3,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Kamu adalah perangkum percakapan yang singkat dan padat.\n\n' +
+            'Ringkas percakapan berikut menjadi POIN-POIN PENTING yang wajib diingat sebagai konteks percakapan selanjutnya.\n\n' +
+            'Aturan:\n' +
+            '- Bahasa Indonesia\n' +
+            '- Format:\n' +
+            '  Ringkasan percakapan:\n' +
+            '  - Poin 1\n' +
+            '  - Poin 2\n' +
+            '- Maksimal 8 poin, setiap poin satu kalimat singkat\n' +
+            '- Simpan info penting: preferensi user, keputusan, task yang sedang dikerjakan, hasil/kode penting\n' +
+            '- Buang basa-basi, sapaan, dan detail yang tidak penting',
+        },
+        {
+          role: 'user',
+          content: `Ringkas percakapan berikut:\n\n${transcript}`,
+        },
+      ],
+    });
+
+    const summary = result.text?.trim();
+    return summary || null;
+  } catch (err) {
+    console.error('Error summarizing history:', err);
+    return null;
   }
 }
 
