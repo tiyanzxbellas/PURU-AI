@@ -2,7 +2,7 @@ import { Bot, InputFile, GrammyError, type Context } from 'grammy';
 import { type ModelMessage, pruneMessages } from 'ai';
 import { getEncoding } from 'js-tiktoken';
 import { config } from './config.js';
-import { processMessage, summarizeHistory } from './agent.js';
+import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
 import { getHistory, setHistory, deleteHistory, getTokens, setTokens } from './history.js';
 import { listSkills, loadSkill, listSkillFiles, deleteSkill as deleteSkillLoader } from './skills-loader.js';
@@ -10,7 +10,6 @@ import { installFromGitHub, migrateOldSkills } from './skills-registry.js';
 
 const encoder = getEncoding('o200k_base');
 
-const MAX_HISTORY_TOKENS = config.compactToken;
 const MAX_MESSAGE_LENGTH = 4096;
 
 const MENU_TEXT =
@@ -19,7 +18,7 @@ const MENU_TEXT =
   'CMD: /menu\nDESC: "Menampilkan menu ini"\n\n' +
   'CMD: /clear\nDESC: "Menghapus riwayat percakapan"\n\n' +
   'CMD: /token\nDESC: "Melihat penggunaan token"\n\n' +
-  'CMD: /memory\nDESC: "Melihat MEMORY.md"\n\n' +
+  'CMD: /info\nDESC: "Melihat info (memory/user/soul)"\n\n' +
   'CMD: /reset\nDESC: "Reset semua data (riwayat & file)"\n\n' +
   'CMD: /ai <pesan>\nDESC: "Mengobrol dengan AI (khusus grup)"\n\n' +
   '---SKILLS-MENU---\n\n' +
@@ -110,28 +109,6 @@ function countConvTokens(msgs: ModelMessage[]): number {
   return count;
 }
 
-// Remove oldest non-system messages until under the token limit,
-// always keeping the last 2 conversation messages + all system messages
-function trimByRemoval(history: ModelMessage[]): ModelMessage[] {
-  const systemMsgs = history.filter(m => m.role === 'system');
-  const nonSystem = history.filter(m => m.role !== 'system');
-
-  const kept: ModelMessage[] = [];
-  let convKept = 0;
-
-  for (let i = nonSystem.length - 1; i >= 0; i--) {
-    const msg = nonSystem[i];
-    const isConv = msg.role === 'user' || msg.role === 'assistant';
-    if (isConv) {
-      if (convKept >= 2 && countConvTokens([...kept, msg]) > MAX_HISTORY_TOKENS) break;
-      convKept++;
-    }
-    kept.unshift(msg);
-  }
-
-  return [...systemMsgs, ...ensureStartsWithUser(kept)];
-}
-
 // Prune history to remove noise (reasoning, old tool-calls)
 function pruneHistory(history: ModelMessage[]): ModelMessage[] {
   return pruneMessages({
@@ -142,31 +119,25 @@ function pruneHistory(history: ModelMessage[]): ModelMessage[] {
   });
 }
 
-// Trim history to stay within token limit (custom, no LangChain round-trip).
-// If only a few conversation messages remain, summarize them into key points.
-async function trimHistory(history: ModelMessage[]): Promise<ModelMessage[]> {
-  if (history.length === 0) return history;
+const MAX_USER_MESSAGES = 5;
 
-  const estimatedTokens = countConvTokens(history);
-  if (estimatedTokens <= MAX_HISTORY_TOKENS) {
-    return ensureStartsWithUser(history);
+// Keep at most MAX_USER_MESSAGES user turns sent to the model. The incoming
+// user message is appended at request time, so stored history keeps at most
+// MAX_USER_MESSAGES - 1 turns. The oldest user turn is removed together with
+// its assistant/tool responses, so the next user message lands right after the
+// system messages and the remaining order is preserved.
+function capUserTurns(history: ModelMessage[]): ModelMessage[] {
+  const result = [...history];
+  const countUser = (msgs: ModelMessage[]) => msgs.filter(m => m.role === 'user').length;
+
+  while (countUser(result) >= MAX_USER_MESSAGES) {
+    const first = result.findIndex(m => m.role === 'user');
+    const next = result.findIndex((m, i) => i > first && m.role === 'user');
+    if (first < 0 || next < 0) break;
+    result.splice(first, next - first);
   }
 
-  const convCount = history.filter(m => m.role === 'user' || m.role === 'assistant').length;
-
-  if (convCount < 5) {
-    const summary = await summarizeHistory(history);
-    if (summary) {
-      const systemMsgs = history.filter(m => m.role === 'system');
-      const result: ModelMessage[] = [...systemMsgs, { role: 'user', content: summary }];
-      console.log(`History summarized from ${estimatedTokens} to ${countConvTokens(result)} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
-      return ensureStartsWithUser(result);
-    }
-  }
-
-  const result = trimByRemoval(history);
-  console.log(`History trimmed from ${estimatedTokens} to ${countConvTokens(result)} estimated tokens (limit: ${MAX_HISTORY_TOKENS})`);
-  return result;
+  return ensureStartsWithUser(result);
 }
 
 const INVALID_COMMAND_TEXT =
@@ -221,38 +192,57 @@ export function createBot() {
     // Recalculate on-demand: raw history tokens (user & assistant text only)
     const rawTokens = history.length > 0 ? countConvTokens(history) : 0;
 
-    // Recalculate on-demand: post-trim tokens (what will actually be sent)
-    let trimmedTokens = rawTokens;
+    // Recalculate on-demand: post-prune tokens (what will actually be sent)
+    let postPruneTokens = rawTokens;
     if (history.length > 0) {
-      const pruned = pruneHistory(history);
-      const prunedTokens = countConvTokens(pruned);
-      if (prunedTokens > MAX_HISTORY_TOKENS) {
-        trimmedTokens = countConvTokens(trimByRemoval(pruned));
-      } else {
-        trimmedTokens = prunedTokens;
-      }
+      postPruneTokens = countConvTokens(capUserTurns(pruneHistory(history)));
     }
 
     let reply = '📊 *Penggunaan Token*\n\n' +
       `👤 User: ${userCount} pesan\n` +
       `🤖 Assistant: ${assistantCount} pesan\n` +
       `📜 History (raw): ${rawTokens.toLocaleString()} token\n` +
-      `✂️ History (post-trim): ${trimmedTokens.toLocaleString()} token\n`;
+      `✂️ History (post-prune): ${postPruneTokens.toLocaleString()} token\n`;
     if (lastStep) {
       reply += `🔢 Last step: ${lastStep.total.toLocaleString()} token (input: ${lastStep.input.toLocaleString()} + output: ${lastStep.output.toLocaleString()})\n\n`;
     }
-    reply += `_ℹ️ Batas: ${MAX_HISTORY_TOKENS.toLocaleString()} token. History di-prune & dipotong sebelum request. Estimasi tidak termasuk system prompt._`;
+    reply += `_ℹ️ History di-prune & dibatasi maksimal 5 pesan user sebelum request. Estimasi tidak termasuk system prompt._`;
     safeReply(ctx, reply, { reply_to_message_id: ctx.msg?.message_id });
   });
 
-  bot.command('memory', async (ctx: Context) => {
+  bot.command('info', async (ctx: Context) => {
     const userId = ctx.from!.id;
-    const content = await vfs.readFile(userId, 'memory/MEMORY.md');
-    if (!content) {
-      await safeReply(ctx, 'Belum ada MEMORY.md.', { reply_to_message_id: ctx.msg?.message_id });
+    const arg = ((ctx.match as string) || '').trim().split(/\s+/)[0].toLowerCase();
+
+    const files: Record<string, string> = {
+      memory: 'memory/MEMORY.md',
+      user: 'memory/USER.md',
+      soul: 'memory/SOUL.md',
+    };
+
+    if (!arg) {
+      const statuses: string[] = [];
+      for (const name of Object.keys(files)) {
+        const content = await vfs.readFile(userId, files[name]);
+        statuses.push(`• /info ${name} — ${content ? 'ada' : 'kosong'}`);
+      }
+      await safeReply(ctx, `📁 *Info Memory*\n\n${statuses.join('\n')}\n\nGunakan:\n/info memory — Isi MEMORY.md\n/info user — Persona user\n/info soul — Persona AI`, { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
-    await safeReply(ctx, `🧠 *MEMORY.md*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
+
+    const file = files[arg];
+    if (!file) {
+      await safeReply(ctx, 'Subperintah tidak dikenal.\n\nGunakan:\n/info memory — Isi MEMORY.md\n/info user — Persona user\n/info soul — Persona AI', { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+
+    const content = await vfs.readFile(userId, file);
+    const label = arg === 'memory' ? 'MEMORY.md' : arg === 'user' ? 'USER.md' : 'SOUL.md';
+    if (!content) {
+      await safeReply(ctx, `Belum ada ${label}.`, { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+    await safeReply(ctx, `📄 *${label}*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('skills', async (ctx: Context) => {
@@ -439,7 +429,7 @@ export function createBot() {
     await safeReply(ctx, 'Subperintah tidak dikenal.\n\nGunakan:\n/skills — Daftar skill\n/skills search <query> — Cari skill\n/skills install <url> — Install dari GitHub\n/skills info <nama> — Info detail\n/skills read <nama> — Baca isi\n/skills delete <nama> — Hapus\n/skills migrate — Migrate skill lama', { reply_to_message_id: ctx.msg?.message_id });
   });
 
-  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/memory', '/reset', '/skills'];
+  const KNOWN_COMMANDS = ['/start', '/menu', '/clear', '/token', '/info', '/reset', '/skills'];
 
   bot.on('message:document', async (ctx: Context) => {
     const userId = ctx.from!.id;
@@ -488,11 +478,10 @@ export function createBot() {
 
     const history = await getHistory(userId);
 
-    // Prune then trim history before processing
+    // Prune then cap to max 5 user turns before processing
     const pruned = pruneHistory(history);
-    const trimmedHistory = await trimHistory(pruned);
     history.length = 0;
-    history.push(...trimmedHistory);
+    history.push(...capUserTurns(pruned));
 
     try {
       const filePreview = fileContent.length > 4000 ? fileContent.slice(0, 4000) + '\n...(truncated)' : fileContent;
@@ -565,11 +554,10 @@ export function createBot() {
 
     const history = await getHistory(userId);
 
-    // Prune then trim history before processing
+    // Prune then cap to max 5 user turns before processing
     const pruned = pruneHistory(history);
-    const trimmedHistory = await trimHistory(pruned);
     history.length = 0;
-    history.push(...trimmedHistory);
+    history.push(...capUserTurns(pruned));
 
     let thinkingMsg;
     try {

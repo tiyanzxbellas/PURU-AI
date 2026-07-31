@@ -6,7 +6,7 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 
 - **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
 - **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
-- **User Memory** — AI mengingat informasi user dengan membaca/menulis `/memory/MEMORY.md` di VFS user
+- **User Memory** — Persona user (`/memory/USER.md`) dan persona AI (`/memory/SOUL.md`) di-inject ke system prompt; informasi percakapan disimpan di `/memory/MEMORY.md`
 - **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
 - **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
 - **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
@@ -24,6 +24,7 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 | `/menu` | Menampilkan daftar perintah |
 | `/clear` | Menghapus riwayat percakapan |
 | `/token` | Melihat penggunaan token |
+| `/info` | Melihat info memory (`/info memory|user|soul`) |
 | `/reset` | Menghapus semua data (riwayat + file VFS) |
 | `/skills` | Menampilkan daftar skill |
 | `/skills search <query>` | Mencari skill dari GitHub |
@@ -81,7 +82,7 @@ src/
 - [grammY](https://grammy.dev/) — Telegram Bot Framework
 - [Vercel AI SDK](https://sdk.vercel.ai/) — AI streaming, tool calling, `ToolLoopAgent`
 - [Firebase Realtime Database](https://firebase.google.com/) — Penyimpanan file user (VFS)
-- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Utilitas trimming pesan
+- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Prompt template system
 - [lru-cache](https://www.npmjs.com/package/lru-cache) — LRU cache in-memory untuk chat history
 - [Zod](https://zod.dev/) — Validasi schema untuk input AI tools
 - TypeScript, Node.js
@@ -129,7 +130,6 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `HOSTNAME` | `localhost` | Alamat bind server |
 | `PORT` | `3000` | Port server |
 | `TEMPERATURE` | `0` | Temperature model AI |
-| `COMPACT_TOKEN` | `20480` | Token maksimal untuk kompresi history |
 | `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
 | `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |
 | `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
