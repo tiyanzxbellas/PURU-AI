@@ -22,6 +22,9 @@ async function start() {
     return;
   }
 
+  let conflictCount = 0;
+  const MAX_CONSECUTIVE_CONFLICTS = 5;
+
   while (true) {
     try {
       console.log('Connecting to Telegram...');
@@ -31,6 +34,7 @@ async function start() {
           console.log('Bot started!');
         },
       });
+      conflictCount = 0;
       break;
     } catch (err) {
       const isConflict = err instanceof Error && (
@@ -39,13 +43,18 @@ async function start() {
       );
 
       if (isConflict) {
-        console.warn(`Conflict detected, reconnecting in 10s...`);
+        conflictCount++;
+        if (conflictCount >= MAX_CONSECUTIVE_CONFLICTS) {
+          console.error(`Conflict berturut-turut ${conflictCount}x — kemungkinan instance lain memakai token yang sama. Keluar agar platform restart bersih.`);
+          process.exit(1);
+        }
+        console.warn(`Conflict detected (${conflictCount}/${MAX_CONSECUTIVE_CONFLICTS}), reconnecting in 10s...`);
         await new Promise(r => setTimeout(r, 10000));
         continue;
       }
 
       console.error('Fatal bot error:', err);
-      break;
+      process.exit(1);
     }
   }
 }

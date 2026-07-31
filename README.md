@@ -13,7 +13,8 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 - **Web Crawl** — Ambil dan ringkas konten website
 - **Math & Time** — Evaluasi matematika bawaan dan tools jam dengan timezone
 - **Group Chat** — Gunakan `/ai <pesan>` untuk berinteraksi dengan bot di grup
-- **Exponential Backoff** — Retry hingga 5 kali dengan delay 1s→2s→4s→8s→16s pada kegagalan API
+- **Exponential Backoff** — Retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Web search retry 5 kali (1s→16s)
+- **Timeouts & Batas Memori** — `ToolLoopAgent` dibatasi timeout total 5 menit, per-step & per-tool 2 menit; `crawl` max 1.5MB, `read_file` max 30k char, upload dokumen max 10MB, isi history di-truncate max 8k char/message
 - **Markdown Fallback** — Menangani error parse Telegram dengan retry tanpa parse mode
 
 ## Commands

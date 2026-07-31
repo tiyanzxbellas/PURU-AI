@@ -45,7 +45,7 @@ async function fbDelete(path: string): Promise<void> {
 export async function getHistory(chatId: number): Promise<ModelMessage[]> {
   const key = String(chatId);
   const cached = historyCache.get(key);
-  if (cached) return cached;
+  if (cached) return [...cached];
 
   const data = await fbGet(`history/${key}/messages`);
   const messages: ModelMessage[] = Array.isArray(data) ? data : [];

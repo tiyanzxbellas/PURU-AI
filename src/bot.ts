@@ -121,6 +121,63 @@ function pruneHistory(history: ModelMessage[]): ModelMessage[] {
 
 const MAX_USER_MESSAGES = 5;
 
+const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
+const MAX_STORED_CONTENT = 8000;
+
+function truncateString(s: string, max = MAX_STORED_CONTENT): string {
+  return s.length > max ? s.slice(0, max) + '\n...[truncated]' : s;
+}
+
+function truncateArgs(args: unknown): unknown {
+  if (typeof args === 'string') return truncateString(args);
+  if (args && typeof args === 'object') {
+    try {
+      const json = JSON.stringify(args);
+      if (json.length <= MAX_STORED_CONTENT) return args;
+      return truncateString(json);
+    } catch {
+      return args;
+    }
+  }
+  return args;
+}
+
+// Batasi isi history sebelum disimpan agar tool output besar tidak menumpuk
+// di memori (LRU cache) maupun Firebase RTDB.
+function sanitizeHistoryMessages(messages: ModelMessage[]): ModelMessage[] {
+  return messages.map((msg) => {
+    let out: ModelMessage = msg;
+    const content = msg.content as any;
+
+    if (typeof content === 'string') {
+      out = { ...out, content: truncateString(content) } as ModelMessage;
+    } else if (Array.isArray(content)) {
+      out = {
+        ...out,
+        content: content.map((part: any) => {
+          if (typeof part === 'string') return truncateString(part);
+          if (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string') {
+            return { ...part, text: truncateString(part.text) };
+          }
+          return part;
+        }),
+      } as ModelMessage;
+    }
+
+    if (Array.isArray((msg as any).toolCalls)) {
+      out = {
+        ...out,
+        toolCalls: (msg as any).toolCalls.map((tc: any) => ({
+          ...tc,
+          args: truncateArgs(tc.args),
+        })),
+      } as any;
+    }
+
+    return out;
+  });
+}
+
 // Keep at most MAX_USER_MESSAGES user turns sent to the model. The incoming
 // user message is appended at request time, so stored history keeps at most
 // MAX_USER_MESSAGES - 1 turns. The oldest user turn is removed together with
@@ -440,6 +497,11 @@ export function createBot() {
     const caption = ctx.message!.caption || '';
     const chatId = ctx.chat!.id;
 
+    if (doc.file_size && doc.file_size > MAX_UPLOAD_SIZE) {
+      await safeReply(ctx, '⚠️ File terlalu besar untuk diproses (maks 10MB).', { reply_to_message_id: ctx.msg?.message_id });
+      return;
+    }
+
     const trimmed = caption.trim();
     let vfsPath: string;
     let prompt: string;
@@ -512,7 +574,7 @@ export function createBot() {
       });
 
       history.push({ role: 'user', content: injectedPrompt } as ModelMessage);
-      history.push(...responseMessages);
+      history.push(...sanitizeHistoryMessages(responseMessages));
 
       await setTokens(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
       await setHistory(userId, history);
@@ -595,7 +657,7 @@ export function createBot() {
       });
 
       history.push({ role: 'user', content: userMessage } as ModelMessage);
-      history.push(...responseMessages);
+      history.push(...sanitizeHistoryMessages(responseMessages));
 
       await setTokens(userId, { total: lastStepUsage.totalTokens, input: lastStepUsage.inputTokens, output: lastStepUsage.outputTokens });
       await setHistory(userId, history);

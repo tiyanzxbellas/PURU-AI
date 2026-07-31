@@ -25,6 +25,11 @@ const agent = new ToolLoopAgent({
   temperature: config.temperature,
   allowSystemInMessages: true,
   stopWhen: isStepCount(config.maxLoop),
+  timeout: {
+    totalMs: 300_000,
+    stepMs: 120_000,
+    toolMs: 120_000,
+  },
   tools: {
     list_directory: tool({
       description: 'Membaca dan menampilkan daftar file serta folder di dalam direktori yang ditentukan di virtual file system.',
@@ -46,6 +51,14 @@ const agent = new ToolLoopAgent({
       execute: async ({ path }) => withTimeout((async () => {
         const content = await vfs.readFile(requestChatId, path);
         if (content === null) return { error: 'File not found', content: null };
+        if (content.length > MAX_READ_FILE_CHARS) {
+          return {
+            content: content.slice(0, MAX_READ_FILE_CHARS),
+            path,
+            truncated: true,
+            note: `File lebih dari ${MAX_READ_FILE_CHARS.toLocaleString('id-ID')} karakter, hanya sebagian yang ditampilkan. Gunakan edit_file atau tool lain untuk bagian tertentu.`,
+          };
+        }
         return { content, path };
       })(), TOOL_TIMEOUT),
     }),
@@ -128,7 +141,7 @@ const agent = new ToolLoopAgent({
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
-            const res = await fetch(`https://puruboy-api.vercel.app/api/search/yahoo?q=${encodeURIComponent(q)}`);
+            const res = await fetch(`https://puruboy-api.vercel.app/api/search/yahoo?q=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(20000) });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             return { query: q, results: data?.result || [] };
@@ -154,7 +167,23 @@ const agent = new ToolLoopAgent({
         try {
           const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
           if (!res.ok) return { error: `HTTP ${res.status}`, url };
-          const html = await res.text();
+
+          let html = '';
+          const reader = res.body?.getReader();
+          if (reader) {
+            const decoder = new TextDecoder();
+            let total = 0;
+            while (total < MAX_CRAWL_BYTES) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              total += value.length;
+              html += decoder.decode(value, { stream: true });
+            }
+            await reader.cancel().catch(() => {});
+            html += decoder.decode();
+          } else {
+            html = (await res.text()).slice(0, MAX_CRAWL_BYTES);
+          }
 
           const { load } = await import('cheerio');
           const $ = load(html);
@@ -176,7 +205,7 @@ const agent = new ToolLoopAgent({
             const captured = consoleOutput.join('\n').slice(0, 2000);
             return {
               url,
-              result: result != null ? String(result) : 'null',
+              result: result != null ? String(result).slice(0, MAX_CRAWL_RESULT_CHARS) : 'null',
               ...(captured ? { consoleOutput: captured } : {}),
             };
           } catch (codeError) {
@@ -357,6 +386,9 @@ const agent = new ToolLoopAgent({
 });
 
 const TOOL_TIMEOUT = 120_000;
+const MAX_READ_FILE_CHARS = 30_000;
+const MAX_CRAWL_BYTES = 1_500_000;
+const MAX_CRAWL_RESULT_CHARS = 20_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -371,6 +403,19 @@ async function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 4xx selain 408/429 bersifat permanen (invalid key, not found, dll) — tidak
+// perlu di-retry karena hanya akan membakar CPU & memori.
+function isNonRetryableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const statusMatch =
+    err.message.match(/status\s*:?\s*(\d{3})/i) ||
+    err.message.match(/response\s*status\s*(\d{3})/i) ||
+    err.message.match(/\b(4\d{2})\b/);
+  if (!statusMatch) return false;
+  const status = Number(statusMatch[1]);
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
 export interface ProcessMessageOptions {
   chatId: number;
   sendFile?: (content: string, filename: string, caption?: string) => Promise<void>;
@@ -382,7 +427,7 @@ export async function processMessage(
   history: ModelMessage[],
   options: ProcessMessageOptions,
 ): Promise<{ text: string; responseMessages: ModelMessage[]; totalTokens: number; lastStepUsage: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
-  const MAX_RETRIES = 8;
+  const MAX_RETRIES = 4;
   let lastError: Error | undefined;
 
   requestChatId = options.chatId;
@@ -454,10 +499,16 @@ export async function processMessage(
         lastError = new Error('Empty response from AI');
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        if (isNonRetryableError(err)) {
+          console.error('API failed (non-retryable):', lastError.message);
+          break;
+        }
       }
 
       if (attempt < MAX_RETRIES) {
-        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying immediately:`, lastError.message);
+        const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+        console.warn(`API attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${backoff}ms:`, lastError.message);
+        await delay(backoff);
       }
     }
 
