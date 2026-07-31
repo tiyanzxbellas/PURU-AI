@@ -38,6 +38,8 @@ interface Config {
   maxLoop: number;
   historyCacheMax: number;
   historyCacheTtl: number;
+  memoryUpdateEvery: number;
+  memoryMaxChars: number;
 }
 
 export const config: Config = {
@@ -55,4 +57,6 @@ export const config: Config = {
   maxLoop: Number(process.env.MAX_LOOP) || 20,
   historyCacheMax: Number(process.env.HISTORY_CACHE_MAX) || 500,
   historyCacheTtl: Number(process.env.HISTORY_CACHE_TTL) || 600_000,
+  memoryUpdateEvery: Number(process.env.MEMORY_UPDATE_EVERY) || 3,
+  memoryMaxChars: Number(process.env.MEMORY_MAX_CHARS) || 8000,
 };

@@ -86,3 +86,15 @@ export async function setTokens(chatId: number, tokens: { total: number; input: 
   tokensCache.set(key, tokens);
   await fbPut(`history/${key}/tokens`, tokens);
 }
+
+// --- Meta CRUD (counter internal, mis. jumlah turn user untuk trigger memory update) ---
+
+export async function getMeta(chatId: number): Promise<{ userTurns: number } | null> {
+  const data = await fbGet(`history/${String(chatId)}/meta`);
+  if (!data || typeof data !== 'object') return null;
+  return { userTurns: Number(data.userTurns) || 0 };
+}
+
+export async function setMeta(chatId: number, meta: { userTurns: number }): Promise<void> {
+  await fbPut(`history/${String(chatId)}/meta`, meta);
+}

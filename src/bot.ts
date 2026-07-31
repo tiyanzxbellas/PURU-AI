@@ -4,7 +4,8 @@ import { getEncoding } from 'js-tiktoken';
 import { config } from './config.js';
 import { processMessage } from './agent.js';
 import * as vfs from './vfs.js';
-import { getHistory, setHistory, deleteHistory, getTokens, setTokens } from './history.js';
+import { getHistory, setHistory, deleteHistory, getTokens, setTokens, getMeta, setMeta } from './history.js';
+import { updateMemory } from './memory.js';
 import { listSkills, loadSkill, listSkillFiles, deleteSkill as deleteSkillLoader } from './skills-loader.js';
 import { installFromGitHub, migrateOldSkills } from './skills-registry.js';
 
@@ -199,6 +200,25 @@ function capUserTurns(history: ModelMessage[]): ModelMessage[] {
 
 const INVALID_COMMAND_TEXT =
   '❌ Perintah tidak dikenal. Gunakan /menu untuk melihat daftar perintah yang tersedia.';
+
+// Increment counter turn user lalu pemicu update MEMORY.md otomatis setiap
+// MEMORY_UPDATE_EVERY pesan. Dijalankan SETELAH reply terkirim agar user tidak
+// menunggu; error tidak menggagalkan alur chat.
+async function maybeUpdateMemory(userId: number, history: ModelMessage[]) {
+  try {
+    const meta = await getMeta(userId);
+    const userTurns = (meta?.userTurns ?? 0) + 1;
+    await setMeta(userId, { userTurns });
+
+    if (userTurns % config.memoryUpdateEvery !== 0) return;
+    const updated = await updateMemory(userId, history);
+    if (updated) {
+      console.log(`Memory updated for user ${userId} (turn ${userTurns})`);
+    }
+  } catch (err) {
+    console.warn('Memory update failed:', err);
+  }
+}
 
 export function createBot() {
   const bot = new Bot(config.telegramBotToken);
@@ -580,6 +600,7 @@ export function createBot() {
       await setHistory(userId, history);
 
       await safeEdit(ctx, chatId, saveMsg.message_id, text);
+      await maybeUpdateMemory(userId, history);
     } catch (error) {
       console.error('Error processing file message:', error);
       await safeEdit(ctx, chatId, saveMsg.message_id, 'Maaf, terjadi kesalahan saat memproses file.');
@@ -663,6 +684,7 @@ export function createBot() {
       await setHistory(userId, history);
 
       await safeEdit(ctx, chatId, thinkingMsgId, text);
+      await maybeUpdateMemory(userId, history);
     } catch (error) {
       console.error('Error processing message:', error);
       await safeEdit(ctx, chatId, thinkingMsgId, 'Maaf, terjadi kesalahan saat memproses pesan Anda. Silakan coba lagi.');

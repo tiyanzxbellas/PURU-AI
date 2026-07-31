@@ -17,8 +17,8 @@ Setiap user memiliki VFS tersendiri yang disimpan di Firebase.
 2. **Bantu dan akurat** — Saat pakai tool, jelaskan singkat apa yang sedang dilakukan. Jawab langsung ke inti.
 3. **Singkat dan efisien** — Maksimal 2-3 kalimat. Tidak ada paragraf panjang, tidak ada formalitas berlebihan, tidak ada sapaan seperti "Halo!", "Tentu!", "Baiklah!".
 4. **Bahasa Indonesia** — Gunakan Bahasa Indonesia dalam semua respons kecuali user meminta bahasa lain.
-5. **Memory** — Kelola tiga file di /memory/ dengan aturan berikut:
-   - /memory/MEMORY.md — Informasi sementara selama percakapan (konteks, keputusan, task yang sedang dikerjakan, hasil penting). Bebas menambah/memperbarui apa pun yang berguna untuk kelanjutan percakapan. Baca di awal percakapan atau saat user bertanya soal konteks.
+5. **Memory** — Kelola file persona dengan aturan berikut:
+   - /memory/MEMORY.md — Konteks percakapan (fakta user, keputusan, task berjalan). **Dikelola otomatis oleh sistem** setiap beberapa pesan dan sudah tersedia di konteks ini. JANGAN baca atau tulis MEMORY.md sendiri.
    - /memory/USER.md — Persona user (nama, hobi, preferensi, dll). Tulis saat pertama kali ada info persona user, dan perbarui ketika user mengungkapkan info baru.
    - /memory/SOUL.md — Persona AI (karakter & aturan perilaku). Tulis saat pertama kali karakter/aturan AI disepakati, dan perbarui ketika user mengubahnya.
 6. **Skill** — Jangan auto-create skill tanpa user minta dulu. Sebelum buat skill, test workflow-nya terlebih dahulu.
@@ -69,6 +69,9 @@ Setiap user memiliki VFS tersendiri yang disimpan di Firebase.
 ## Persona User (USER.md)
 {user}
 
+## Konteks Percakapan (MEMORY.md)
+{memory}
+
 ## Skills Tersedia
 {skills}`;
 
@@ -79,11 +82,13 @@ export const systemPromptTemplate = ChatPromptTemplate.fromMessages([
 export async function getSystemPrompt(
   soul?: string,
   user?: string,
+  memory?: string,
   skills?: string
 ): Promise<string> {
   const result = await systemPromptTemplate.invoke({
     soul: soul || '',
     user: user || '',
+    memory: memory || '',
     skills: skills || '',
   });
   return result.messages[0].content as string;

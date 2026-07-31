@@ -434,16 +434,23 @@ export async function processMessage(
   requestSendFile = options.sendFile || null;
   requestSendBuffer = options.sendBuffer || null;
 
-  const [userContent, soulContent] = await Promise.all([
+  const [userContent, soulContent, memoryContent] = await Promise.all([
     vfs.readFile(requestChatId, 'memory/USER.md'),
     vfs.readFile(requestChatId, 'memory/SOUL.md'),
+    vfs.readFile(requestChatId, 'memory/MEMORY.md'),
   ]);
 
   const skillsSummary = await buildSkillsSummary(requestChatId);
 
+  const memory =
+    memoryContent && memoryContent.length > config.memoryMaxChars
+      ? memoryContent.slice(0, config.memoryMaxChars) + '\n...[truncated]'
+      : memoryContent || undefined;
+
   const systemPrompt = await getSystemPrompt(
     soulContent || undefined,
     userContent || undefined,
+    memory,
     skillsSummary || undefined
   );
 

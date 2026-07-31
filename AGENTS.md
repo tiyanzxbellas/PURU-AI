@@ -19,6 +19,8 @@
   - `MAX_LOOP` — Iterasi maksimal agent per request (default: `20`)
   - `HISTORY_CACHE_MAX` — User maksimal di LRU cache (default: `500`)
   - `HISTORY_CACHE_TTL` — TTL cache dalam ms (default: `600000` / 10 menit)
+  - `MEMORY_UPDATE_EVERY` — Interval pesan user untuk auto-update MEMORY.md (default: `3`)
+  - `MEMORY_MAX_CHARS` — Cap konten MEMORY.md saat di-inject ke system prompt (default: `8000`)
 
 ## Arsitektur
 - `src/index.ts` — entrypoint, memulai health server lalu bot dalam conflict-retry loop (exit setelah 5x conflict berturut-turut)
@@ -29,6 +31,7 @@
 - `src/e2b.ts` — E2B sandbox (satu per chat, timeout 5 menit, auto-killed saat idle)
 - `src/skills-loader.ts` — Parsing metadata skill, listing, loading dari VFS
 - `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
+- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `generateText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`.
 - `src/server.ts` — HTTP health check di port 3000
 
 ## Perilaku Penting
@@ -39,7 +42,7 @@
 - **Batas history** (`bot.ts`): Sebelum dikirim ke AI, history hanya di-prune (hapus reasoning lama & tool-call lama via `pruneMessages`) lalu dibatasi maksimal 5 pesan user (`capUserTurns`). Turn user terlama dihapus beserta jawaban assistant & tool-call-nya, urutan sisanya dipertahankan.
 - **Conflict loop** (`index.ts`): conflict beruntun ≥5x (tanda ada instance lain dengan token sama) → `process.exit(1)` agar platform restart bersih, bukan spin selamanya.
 - **Pemrosesan sekuensial**: Bot menggunakan `bot.start()` (bukan `bot.run()`) — update diproses satu per satu, menjaga RAM peak tetap rendah di mesin 512MB.
-- **Memory user**: `/memory/USER.md` (persona user) dan `/memory/SOUL.md` (persona AI) di-inject ke system prompt di setiap request. `/memory/MEMORY.md` hanya tempat simpan info percakapan — TIDAK di-inject.
+- **Memory user**: `/memory/USER.md` (persona user), `/memory/SOUL.md` (persona AI), dan `/memory/MEMORY.md` (konteks percakapan) di-inject ke system prompt di setiap request (MEMORY.md dipotong max `MEMORY_MAX_CHARS`). MEMORY.md **dikelola otomatis oleh sistem** — AI DILARANG membaca/menulisnya sendiri; `updateMemory` dipicu setiap `MEMORY_UPDATE_EVERY` pesan user (counter `history/{id}/meta`) SETELAH reply terkirim, error tidak menggagalkan alur chat.
 - **Safe reply/edit** (`bot.ts:36-78`): Error parsing Markdown ditangkap dan retry tanpa `parse_mode`.
 - **E2B sandbox**: create → tulis kode ke VFS → `e2b_run_code` membaca dari VFS. Satu sandbox per chat, kill setelah 5 menit idle.
 - **SoundCloud / web search** via `puruboy-api.vercel.app`.

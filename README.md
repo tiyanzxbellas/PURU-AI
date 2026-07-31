@@ -6,7 +6,7 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 
 - **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
 - **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
-- **User Memory** — Persona user (`/memory/USER.md`) dan persona AI (`/memory/SOUL.md`) di-inject ke system prompt; informasi percakapan disimpan di `/memory/MEMORY.md`
+- **User Memory** — Persona user (`/memory/USER.md`), persona AI (`/memory/SOUL.md`), dan konteks percakapan (`/memory/MEMORY.md`) di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal
 - **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
 - **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
 - **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
@@ -51,6 +51,7 @@ src/
 ├── config.ts     — Config loader (env var BOT_TOKEN override)
 ├── skills-loader.ts — Parsing metadata skill, listing, loading
 ├── skills-registry.ts — Instalasi skill dari GitHub dan pencarian
+├── memory.ts     — Auto-update MEMORY.md internal (generateText)
 └── server.ts     — HTTP health check server (port 3000)
 ```
 
@@ -134,6 +135,8 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
 | `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |
 | `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
+| `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
+| `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
 
 Variable ini opsional. Aplikasi menggunakan nilai default jika tidak diset.
 
