@@ -44,7 +44,7 @@ Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**
 src/
 ├── index.ts      — Entry point, memulai bot + health server
 ├── bot.ts        — Setup Telegram bot (commands, message handler, safeReply/safeEdit)
-├── agent.ts      — ToolLoopAgent dengan 21 tools + processMessage dengan retry + memory injection
+├── agent.ts      — ToolLoopAgent dengan 22 tools (toolChoice 'required') + processMessage dengan retry + memory injection
 ├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
 ├── history.ts    — Chat history (LRU cache + Firebase RTDB persist)
 ├── tools.ts      — ToolNames type union

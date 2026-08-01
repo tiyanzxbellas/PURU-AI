@@ -1,4 +1,4 @@
-import { ToolLoopAgent, tool, isStepCount, type ModelMessage } from 'ai';
+import { ToolLoopAgent, tool, isStepCount, hasToolCall, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { config } from './config.js';
 import { z } from 'zod';
@@ -23,8 +23,9 @@ let requestSendBuffer: ((buffer: Buffer, filename: string, caption?: string) => 
 const agent = new ToolLoopAgent({
   model,
   temperature: config.temperature,
+  toolChoice: 'required',
   allowSystemInMessages: true,
-  stopWhen: isStepCount(config.maxLoop),
+  stopWhen: [hasToolCall('finish'), isStepCount(config.maxLoop)],
   timeout: {
     totalMs: 300_000,
     stepMs: 120_000,
@@ -382,6 +383,14 @@ const agent = new ToolLoopAgent({
         return result;
       })(), TOOL_TIMEOUT),
     }),
+
+    finish: tool({
+      description: 'Menandakan bahwa seluruh pekerjaan sudah selesai dan mengembalikan jawaban final untuk user. WAJIB dipanggil di akhir setiap respons — termasuk untuk obrolan ringan — dengan jawaban final sebagai message.',
+      inputSchema: z.object({
+        message: z.string().describe('Jawaban final yang akan ditampilkan kepada user.'),
+      }),
+      execute: async ({ message }) => ({ done: true, message }),
+    }),
   },
 });
 
@@ -489,6 +498,15 @@ export async function processMessage(
         const lastStepToolCalls = lastStep?.toolCalls;
         const lastStepHasToolCalls = lastStepToolCalls && lastStepToolCalls.length > 0;
 
+        const finishCall = lastStep?.toolResults?.find((r) => r.toolName === 'finish') as
+          | { result?: unknown; output?: unknown }
+          | undefined;
+        const finishOutput = finishCall && 'result' in finishCall
+          ? finishCall.result
+          : finishCall?.output;
+        const finishMessage = (finishOutput as { message?: string } | undefined)?.message;
+        const finalText = finishMessage?.trim() ? finishMessage : text;
+
         const stepCount = steps?.length ?? 0;
         if (stepCount >= 20) {
           return {
@@ -499,8 +517,8 @@ export async function processMessage(
           };
         }
 
-        if (text || lastStepHasToolCalls) {
-          return { text, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
+        if (finalText || lastStepHasToolCalls) {
+          return { text: finalText, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
         }
 
         lastError = new Error('Empty response from AI');

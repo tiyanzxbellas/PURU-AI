@@ -6,4 +6,5 @@ export type ToolNames =
   | 'e2b_sandbox_create' | 'e2b_run_code' | 'e2b_install_package'
   | 'e2b_send_file' | 'e2b_sandbox_kill'
   | 'create_skill' | 'use_skills' | 'delete_skill'
-  | 'search_skills' | 'install_skill';
+  | 'search_skills' | 'install_skill'
+  | 'finish';
