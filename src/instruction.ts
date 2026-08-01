@@ -9,7 +9,7 @@ Per-user virtual file system:
 - /memory/MEMORY.md — conversation context (auto-managed by system)
 - /memory/USER.md — user persona
 - /memory/SOUL.md — AI persona
-- /skills/{name}/SKILL.md — skills
+- /skills/{{name}}/SKILL.md — skills
 
 ## Rules
 1. Use tools when you need to act (search, read, write, edit, math, execute, etc.). Never claim you did something without actually calling the tool.

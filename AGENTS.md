@@ -33,6 +33,7 @@
 - `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
 - `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `streamText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`. Output MEMORY.md minimal: maksimal 10 poin bernomor (1-10), data lama boleh diganti. Memakai `streamText` (bukan `generateText`) karena proxy AI bisa membalas format SSE bahkan untuk request non-streaming.
 - `src/server.ts` — HTTP health check di port 3000
+- `src/instruction.ts` — System prompt agent dibangun dengan `ChatPromptTemplate` (`@langchain/core/prompts`). Variabel template: `{soul}`, `{user}`, `{memory}`, `{skills}`. Kurung kurawal literal di teks prompt WAJIB di-escape sebagai `{{...}}` (contoh: `/skills/{{name}}/SKILL.md`) agar tidak dianggap variabel — kalau tidak, muncul error `INVALID_PROMPT_INPUT: Missing value for input variable ...`
 
 ## Perilaku Penting
 - **Retry**: API call retry hingga 4 kali dengan exponential backoff (1s→2s→4s→8s, cap 30s). Error 4xx selain 408/429 (mis. invalid key) TIDAK di-retry — langsung berhenti. Web search retry 5 kali (1s→16s).
