@@ -507,7 +507,13 @@ export async function processMessage(
         const finalText = finishMessage?.trim() ? finishMessage : text;
 
         const stepCount = steps?.length ?? 0;
-        if (stepCount >= 20) {
+        const hitStepLimit = stepCount >= config.maxLoop;
+
+        if (finishMessage?.trim()) {
+          return { text: finishMessage, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
+        }
+
+        if (hitStepLimit) {
           return {
             text: '⚠️ Percakapan mencapai batas maksimum langkah. Silakan kirim `lanjut` atau `/ai lanjut` untuk melanjutkan percakapan dengan AI, atau masukkan prompt baru.',
             responseMessages: responseMessages as ModelMessage[],
