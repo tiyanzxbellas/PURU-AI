@@ -23,7 +23,6 @@ let requestSendBuffer: ((buffer: Buffer, filename: string, caption?: string) => 
 const agent = new ToolLoopAgent({
   model,
   temperature: config.temperature,
-  toolChoice: 'required',
   allowSystemInMessages: true,
   stopWhen: [hasToolCall('finish'), isStepCount(config.maxLoop)],
   timeout: {

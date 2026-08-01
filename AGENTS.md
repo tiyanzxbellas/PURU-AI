@@ -25,13 +25,13 @@
 ## Arsitektur
 - `src/index.ts` — entrypoint, memulai health server lalu bot dalam conflict-retry loop (exit setelah 5x conflict berturut-turut)
 - `src/bot.ts` — Setup grammY Bot, commands (`/start`, `/menu`, `/clear`, `/token`, `/info`, `/reset`, `/ai`, `/skills`), message handlers
-- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) dengan 22 tools; `toolChoice: 'required'` (model wajib panggil tool tiap step), `stopWhen` = `hasToolCall('finish')` + `isStepCount(maxLoop)`; `temperature` dan `maxLoop` bisa dikonfigurasi
+- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) dengan 22 tools; `toolChoice` default `'auto'` (model bebas panggil tool), `stopWhen` = `hasToolCall('finish')` + `isStepCount(maxLoop)`; `temperature` dan `maxLoop` bisa dikonfigurasi
 - `src/vfs.ts` — Virtual file system per-user disimpan di Firebase Realtime Database
 - `src/history.ts` — Persistensi chat history (LRU cache + Firebase RTDB)
 - `src/e2b.ts` — E2B sandbox (satu per chat, timeout 5 menit, auto-killed saat idle)
 - `src/skills-loader.ts` — Parsing metadata skill, listing, loading dari VFS
 - `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
-- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `streamText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`. Memakai `streamText` (bukan `generateText`) karena proxy AI bisa membalas format SSE bahkan untuk request non-streaming.
+- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `streamText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`. Output MEMORY.md minimal: maksimal 10 poin bernomor (1-10), data lama boleh diganti. Memakai `streamText` (bukan `generateText`) karena proxy AI bisa membalas format SSE bahkan untuk request non-streaming.
 - `src/server.ts` — HTTP health check di port 3000
 
 ## Perilaku Penting
@@ -51,7 +51,7 @@
 ## Konvensi
 - Semua import source menggunakan ekstensi `.js` (ESM).
 - `"type": "module"` di package.json.
-- Instruksi dan respons agent menggunakan Bahasa Indonesia; jawaban harus singkat.
+- System prompt (instruksi) agent berbahasa Inggris dan ringkas; respons ke user dalam Bahasa Indonesia dan singkat.
 - `src/tools.ts` mengekspor type union `ToolNames` — update saat menambah tools.
 - **Setiap perubahan codebase WAJIB diikuti update `AGENTS.md` dan `README.md`** agar informasi (arsitektur, perilaku, command, config) selalu relevan.
 

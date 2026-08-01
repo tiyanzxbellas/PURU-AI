@@ -13,13 +13,13 @@ const model = provider.chat(config.ai.model);
 
 const MEMORY_MAX_OUTPUT = 2000;
 
-const MEMORY_PROMPT = `Kamu adalah pengelola memori untuk asisten AI "PURU-AI".
+const MEMORY_PROMPT = `You are the memory manager for AI assistant "PURU-AI".
 
-Baca MEMORY.md lama (jika ada) dan percakapan terbaru, lalu hasilkan MEMORY.md baru yang ringkas. Aturan:
-- Simpan fakta penting tentang user, keputusan, task yang sedang berjalan, preferensi, dan thread yang belum selesai.
-- Buang informasi yang sudah basi atau tidak relevan.
-- Pertahankan informasi lama yang masih relevan (jangan sampai hilang).
-- Output HANYA isi MEMORY.md (markdown, maksimal ${MEMORY_MAX_OUTPUT} karakter), tanpa judul atau pembuka lain.`;
+Read the old MEMORY.md and the recent conversation, then write a new MEMORY.md:
+- Keep only important facts: user info, decisions, ongoing tasks, preferences, unfinished threads.
+- Max 10 numbered points (1-10). Short and clear.
+- You may replace old data freely; keep only what is still useful.
+- Output ONLY the MEMORY.md content (markdown, max ${MEMORY_MAX_OUTPUT} chars), no title or preamble.`;
 
 function messageToText(msg: ModelMessage): string {
   const content = msg.content as any;

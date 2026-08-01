@@ -6,7 +6,7 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 
 - **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
 - **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
-- **User Memory** — Persona user (`/memory/USER.md`), persona AI (`/memory/SOUL.md`), dan konteks percakapan (`/memory/MEMORY.md`) di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal
+- **User Memory** — Persona user (`/memory/USER.md`), persona AI (`/memory/SOUL.md`), dan konteks percakapan (`/memory/MEMORY.md`) di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal dengan format minimal (maks 10 poin bernomor, data lama bisa diganti)
 - **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
 - **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
 - **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
@@ -44,7 +44,7 @@ Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**
 src/
 ├── index.ts      — Entry point, memulai bot + health server
 ├── bot.ts        — Setup Telegram bot (commands, message handler, safeReply/safeEdit)
-├── agent.ts      — ToolLoopAgent dengan 22 tools (toolChoice 'required') + processMessage dengan retry + memory injection
+├── agent.ts      — ToolLoopAgent dengan 22 tools (toolChoice 'auto') + processMessage dengan retry + memory injection
 ├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
 ├── history.ts    — Chat history (LRU cache + Firebase RTDB persist)
 ├── tools.ts      — ToolNames type union
