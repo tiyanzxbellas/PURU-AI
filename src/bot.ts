@@ -19,7 +19,7 @@ const MENU_TEXT =
   'CMD: /menu\nDESC: "Menampilkan menu ini"\n\n' +
   'CMD: /clear\nDESC: "Menghapus riwayat percakapan"\n\n' +
   'CMD: /token\nDESC: "Melihat penggunaan token"\n\n' +
-  'CMD: /info\nDESC: "Melihat info (memory/user/soul)"\n\n' +
+  'CMD: /info\nDESC: "Melihat info memory"\n\n' +
   'CMD: /reset\nDESC: "Reset semua data (riwayat & file)"\n\n' +
   'CMD: /ai <pesan>\nDESC: "Mengobrol dengan AI (khusus grup)"\n\n' +
   '---SKILLS-MENU---\n\n' +
@@ -291,35 +291,23 @@ export function createBot() {
     const userId = ctx.from!.id;
     const arg = ((ctx.match as string) || '').trim().split(/\s+/)[0].toLowerCase();
 
-    const files: Record<string, string> = {
-      memory: 'memory/MEMORY.md',
-      user: 'memory/USER.md',
-      soul: 'memory/SOUL.md',
-    };
-
     if (!arg) {
-      const statuses: string[] = [];
-      for (const name of Object.keys(files)) {
-        const content = await vfs.readFile(userId, files[name]);
-        statuses.push(`• /info ${name} — ${content ? 'ada' : 'kosong'}`);
-      }
-      await safeReply(ctx, `📁 *Info Memory*\n\n${statuses.join('\n')}\n\nGunakan:\n/info memory — Isi MEMORY.md\n/info user — Persona user\n/info soul — Persona AI`, { reply_to_message_id: ctx.msg?.message_id });
+      const content = await vfs.readFile(userId, 'memory/MEMORY.md');
+      await safeReply(ctx, `📁 *Info Memory*\n\n• /info memory — ${content ? 'ada' : 'kosong'}\n\nGunakan:\n/info memory — Isi MEMORY.md`, { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
 
-    const file = files[arg];
-    if (!file) {
-      await safeReply(ctx, 'Subperintah tidak dikenal.\n\nGunakan:\n/info memory — Isi MEMORY.md\n/info user — Persona user\n/info soul — Persona AI', { reply_to_message_id: ctx.msg?.message_id });
+    if (arg !== 'memory') {
+      await safeReply(ctx, 'Subperintah tidak dikenal.\n\nGunakan:\n/info memory — Isi MEMORY.md', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
 
-    const content = await vfs.readFile(userId, file);
-    const label = arg === 'memory' ? 'MEMORY.md' : arg === 'user' ? 'USER.md' : 'SOUL.md';
+    const content = await vfs.readFile(userId, 'memory/MEMORY.md');
     if (!content) {
-      await safeReply(ctx, `Belum ada ${label}.`, { reply_to_message_id: ctx.msg?.message_id });
+      await safeReply(ctx, 'Belum ada MEMORY.md.', { reply_to_message_id: ctx.msg?.message_id });
       return;
     }
-    await safeReply(ctx, `📄 *${label}*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
+    await safeReply(ctx, `📄 *MEMORY.md*\n\n${content}`, { reply_to_message_id: ctx.msg?.message_id });
   });
 
   bot.command('skills', async (ctx: Context) => {

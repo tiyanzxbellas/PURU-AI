@@ -397,6 +397,12 @@ const TOOL_TIMEOUT = 120_000;
 const MAX_READ_FILE_CHARS = 30_000;
 const MAX_CRAWL_BYTES = 1_500_000;
 const MAX_CRAWL_RESULT_CHARS = 20_000;
+const MAX_CORRECTION_ROUNDS = 1;
+
+const SCOLD_PROMPT =
+  'Kamu tidak memanggil tool apa pun di langkah terakhirmu dan juga tidak memanggil finish. ' +
+  'Tugas belum selesai: jika perlu bertindak, panggil tool yang sesuai SEKARANG; jika sudah selesai, ' +
+  'akhiri dengan memanggil finish beserta jawaban finalmu.';
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -442,11 +448,7 @@ export async function processMessage(
   requestSendFile = options.sendFile || null;
   requestSendBuffer = options.sendBuffer || null;
 
-  const [userContent, soulContent, memoryContent] = await Promise.all([
-    vfs.readFile(requestChatId, 'memory/USER.md'),
-    vfs.readFile(requestChatId, 'memory/SOUL.md'),
-    vfs.readFile(requestChatId, 'memory/MEMORY.md'),
-  ]);
+  const memoryContent = await vfs.readFile(requestChatId, 'memory/MEMORY.md');
 
   const skillsSummary = await buildSkillsSummary(requestChatId);
 
@@ -456,8 +458,6 @@ export async function processMessage(
       : memoryContent || undefined;
 
   const systemPrompt = await getSystemPrompt(
-    soulContent || undefined,
-    userContent || undefined,
     memory,
     skillsSummary || undefined
   );
@@ -470,60 +470,95 @@ export async function processMessage(
       } else break;
     }
 
+    const runAgentOnce = async (messages: ModelMessage[]) => {
+      const result = await agent.stream({ messages });
+      const [text, responseMessages, usage] = await Promise.all([
+        result.text,
+        result.responseMessages,
+        result.usage,
+      ]);
+      const steps = await result.steps;
+      const lastStep = steps?.[steps.length - 1];
+      const lastStepUsage = {
+        inputTokens: lastStep?.usage?.inputTokens ?? 0,
+        outputTokens: lastStep?.usage?.outputTokens ?? 0,
+        totalTokens: lastStep?.usage?.totalTokens ?? 0,
+      };
+      const lastStepToolCalls = lastStep?.toolCalls;
+      const lastStepHasToolCalls = lastStepToolCalls && lastStepToolCalls.length > 0;
+
+      const finishCall = lastStep?.toolResults?.find((r) => r.toolName === 'finish') as
+        | { result?: unknown; output?: unknown }
+        | undefined;
+      const finishOutput = finishCall && 'result' in finishCall
+        ? finishCall.result
+        : finishCall?.output;
+      const finishMessage = (finishOutput as { message?: string } | undefined)?.message;
+      const finalText = finishMessage?.trim() ? finishMessage : text;
+
+      const stepCount = steps?.length ?? 0;
+      const hitStepLimit = stepCount >= config.maxLoop;
+
+      return { text, responseMessages, usage, lastStepUsage, lastStepHasToolCalls, finishMessage, finalText, hitStepLimit };
+    };
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const result = await agent.stream({
-          messages: [
-            { role: 'system' as const, content: systemPrompt },
-            ...history,
-            { role: 'user', content: userMessage },
-          ],
-        });
+        let baseMessages: ModelMessage[] = [
+          { role: 'system' as const, content: systemPrompt },
+          ...history,
+          { role: 'user', content: userMessage },
+        ];
 
-        const [text, responseMessages, usage] = await Promise.all([
-          result.text,
-          result.responseMessages,
-          result.usage,
-        ]);
+        let allResponseMessages: ModelMessage[] = [];
+        let totalTokens = 0;
+        let lastStepUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 
-        const steps = await result.steps;
-        const lastStep = steps?.[steps.length - 1];
-        const lastStepUsage = {
-          inputTokens: lastStep?.usage?.inputTokens ?? 0,
-          outputTokens: lastStep?.usage?.outputTokens ?? 0,
-          totalTokens: lastStep?.usage?.totalTokens ?? 0,
-        };
+        for (let round = 0; round <= MAX_CORRECTION_ROUNDS; round++) {
+          const run = await runAgentOnce(baseMessages);
+          allResponseMessages.push(...(run.responseMessages as ModelMessage[]));
+          totalTokens += run.usage?.totalTokens ?? 0;
+          lastStepUsage = run.lastStepUsage;
 
-        const lastStepToolCalls = lastStep?.toolCalls;
-        const lastStepHasToolCalls = lastStepToolCalls && lastStepToolCalls.length > 0;
+          if (run.finishMessage?.trim()) {
+            return { text: run.finishMessage, responseMessages: allResponseMessages, totalTokens, lastStepUsage };
+          }
 
-        const finishCall = lastStep?.toolResults?.find((r) => r.toolName === 'finish') as
-          | { result?: unknown; output?: unknown }
-          | undefined;
-        const finishOutput = finishCall && 'result' in finishCall
-          ? finishCall.result
-          : finishCall?.output;
-        const finishMessage = (finishOutput as { message?: string } | undefined)?.message;
-        const finalText = finishMessage?.trim() ? finishMessage : text;
+          if (run.hitStepLimit) {
+            return {
+              text: '⚠️ Percakapan mencapai batas maksimum langkah. Silakan kirim `lanjut` atau `/ai lanjut` untuk melanjutkan percakapan dengan AI, atau masukkan prompt baru.',
+              responseMessages: allResponseMessages,
+              totalTokens,
+              lastStepUsage,
+            };
+          }
 
-        const stepCount = steps?.length ?? 0;
-        const hitStepLimit = stepCount >= config.maxLoop;
+          if (run.lastStepHasToolCalls) {
+            return { text: run.finalText, responseMessages: allResponseMessages, totalTokens, lastStepUsage };
+          }
 
-        if (finishMessage?.trim()) {
-          return { text: finishMessage, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
-        }
+          // Last step teks-tanpa-tool & tanpa finish → pelanggaran protocol
+          // (model "basa-basi" tanpa aksi). Tegur lalu re-run sekali.
+          if (round < MAX_CORRECTION_ROUNDS) {
+            console.warn(`[guard] Last step tanpa tool & tanpa finish — menegur AI (round ${round + 1})`);
+            const snippet = run.text.trim().slice(0, 300);
+            baseMessages = [
+              { role: 'system' as const, content: systemPrompt },
+              ...history,
+              { role: 'user', content: userMessage },
+              ...(snippet ? [{ role: 'assistant' as const, content: snippet }] : []),
+              { role: 'user', content: SCOLD_PROMPT },
+            ];
+            continue;
+          }
 
-        if (hitStepLimit) {
-          return {
-            text: '⚠️ Percakapan mencapai batas maksimum langkah. Silakan kirim `lanjut` atau `/ai lanjut` untuk melanjutkan percakapan dengan AI, atau masukkan prompt baru.',
-            responseMessages: responseMessages as ModelMessage[],
-            totalTokens: usage?.totalTokens ?? 0,
-            lastStepUsage,
-          };
-        }
-
-        if (finalText || lastStepHasToolCalls) {
-          return { text: finalText, responseMessages: responseMessages as ModelMessage[], totalTokens: usage?.totalTokens ?? 0, lastStepUsage };
+          // Ronde koreksi habis — hindari loop tak berujung.
+          if (!run.finalText.trim()) {
+            lastError = new Error('Empty response from AI');
+          } else {
+            return { text: run.finalText, responseMessages: allResponseMessages, totalTokens, lastStepUsage };
+          }
+          break;
         }
 
         lastError = new Error('Empty response from AI');

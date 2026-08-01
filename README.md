@@ -6,7 +6,8 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 
 - **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
 - **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
-- **User Memory** — Persona user (`/memory/USER.md`), persona AI (`/memory/SOUL.md`), dan konteks percakapan (`/memory/MEMORY.md`) di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal dengan format minimal (maks 10 poin bernomor, data lama bisa diganti)
+- **User Memory** — Konteks percakapan & info user disimpan di satu file (`/memory/MEMORY.md`) dan di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal dengan format minimal (maks 10 poin bernomor, data lama bisa diganti)
+- **Anti-Halusinasi** — System prompt melarang klaim tanpa tool call, basa-basi, dan filler; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur lalu dijalankan ulang sekali
 - **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
 - **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
 - **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
@@ -25,7 +26,7 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 | `/menu` | Menampilkan daftar perintah |
 | `/clear` | Menghapus riwayat percakapan |
 | `/token` | Melihat penggunaan token |
-| `/info` | Melihat info memory (`/info memory|user|soul`) |
+| `/info` | Melihat info memory (`/info memory`) |
 | `/reset` | Menghapus semua data (riwayat + file VFS) |
 | `/skills` | Menampilkan daftar skill |
 | `/skills search <query>` | Mencari skill dari GitHub |
