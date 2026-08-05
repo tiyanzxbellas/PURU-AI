@@ -400,9 +400,8 @@ const MAX_CRAWL_RESULT_CHARS = 20_000;
 const MAX_CORRECTION_ROUNDS = 1;
 
 const SCOLD_PROMPT =
-  'Kamu tidak memanggil tool apa pun di langkah terakhirmu dan juga tidak memanggil finish. ' +
-  'Tugas belum selesai: jika perlu bertindak, panggil tool yang sesuai SEKARANG; jika sudah selesai, ' +
-  'akhiri dengan memanggil finish beserta jawaban finalmu.';
+  '[system] Lanjutkan pekerjaanmu sampai selesai. Jika masih ada langkah yang perlu diambil, ' +
+  'panggil tool yang sesuai sekarang. Jika sudah selesai, panggil tool finish beserta jawaban finalmu. [/system]';
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
