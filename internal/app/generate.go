@@ -60,8 +60,11 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 	})
 	_ = a.hist.SetHistory(ctx, userID, saved)
 
-	if err := a.safeEdit(ctx, chatID, thID, res.Text); err != nil {
-		log.Printf("[app] edit final reply failed: %v", err)
+	if err := a.safeSend(ctx, msg, res.Text); err != nil {
+		log.Printf("[app] send final reply failed: %v", err)
+	}
+	if err := a.tg.DeleteMessage(ctx, chatID, thID); err != nil {
+		log.Printf("[app] delete thinking message failed: %v", err)
 	}
 	a.maybeUpdateMemory(ctx, userID, saved)
 	return nil
@@ -165,8 +168,11 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 		Output: res.LastStepUsage.OutputTokens,
 	})
 
-	if err := a.safeEdit(ctx, chatID, saveID, res.Text); err != nil {
-		log.Printf("[app] edit file-process reply failed: %v", err)
+	if err := a.safeSend(ctx, msg, res.Text); err != nil {
+		log.Printf("[app] send file-process reply failed: %v", err)
+	}
+	if err := a.tg.DeleteMessage(ctx, chatID, saveID); err != nil {
+		log.Printf("[app] delete save message failed: %v", err)
 	}
 	a.maybeUpdateMemory(ctx, userID, saved)
 	return nil

@@ -19,4 +19,7 @@ func TestGetRendersLiteralBraces(t *testing.T) {
 	if !strings.Contains(out, "skills-y") {
 		t.Fatalf("skills not injected")
 	}
+	if !strings.Contains(out, "do NOT call any tool") {
+		t.Fatalf("clarification guideline missing: %s", out)
+	}
 }

@@ -7,13 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
+	"sync"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
@@ -25,7 +28,7 @@ const (
 	pipelineUsers    = 5
 )
 
-var knownCommands = []string{"/start", "/menu", "/clear", "/token", "/info", "/reset", "/skills"}
+var knownCommands = []string{"/start", "/menu", "/clear", "/token", "/info", "/reset", "/skills", "/config"}
 
 type App struct {
 	cfg      *config.Config
@@ -36,6 +39,8 @@ type App struct {
 	mem      *memory.Manager
 	catalog  *skills.Catalog
 	registry *skills.Registry
+	Settings *settings.Manager
+	busy     sync.Map // set of user IDs with an in-flight request
 }
 
 func New(cfg *config.Config, tg *telegram.API, h *history.Store, v *vfs.VFS, a *ai.Agent, m *memory.Manager, c *skills.Catalog, r *skills.Registry) *App {
@@ -46,19 +51,45 @@ func New(cfg *config.Config, tg *telegram.API, h *history.Store, v *vfs.VFS, a *
 	return app
 }
 
-// Handle processes one Telegram update (sequentially from the long poll).
+// tryAcquire marks a user as busy; false means the user already has an
+// in-flight request and the new one must be rejected.
+func (a *App) tryAcquire(userID int64) bool {
+	_, loaded := a.busy.LoadOrStore(userID, struct{}{})
+	return !loaded
+}
+
+func (a *App) release(userID int64) {
+	a.busy.Delete(userID)
+}
+
+// Handle dispatches one Telegram update. Processing runs in a goroutine so
+// different users are handled in parallel; a second update from the same user
+// while one is still in-flight gets a busy reply instead of queueing.
 func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 	if upd.Message == nil || upd.Message.From == nil || upd.Message.Chat == nil {
 		return nil
 	}
 	msg := upd.Message
-	if msg.Document != nil {
-		return a.handleDocument(ctx, msg)
-	}
-	if msg.Text == "" {
+	if msg.Document == nil && msg.Text == "" {
 		return nil
 	}
-	return a.handleText(ctx, msg)
+	userID := msg.From.ID
+	if !a.tryAcquire(userID) {
+		return a.safeReply(ctx, msg, "⏳ Masih ada yang lagi diproses, tunggu sebentar ya...", true)
+	}
+	go func() {
+		defer a.release(userID)
+		var err error
+		if msg.Document != nil {
+			err = a.handleDocument(ctx, msg)
+		} else {
+			err = a.handleText(ctx, msg)
+		}
+		if err != nil {
+			log.Printf("[app] async handle for user %d failed: %v", userID, err)
+		}
+	}()
+	return nil
 }
 
 func (a *App) isGroup(msg *telegram.Message) bool {
@@ -103,6 +134,18 @@ func (a *App) safeReply(ctx context.Context, msg *telegram.Message, text string,
 		_, err := a.tg.SendMessage(ctx, msg.Chat.ID, text, opts)
 		return err
 	})
+}
+
+// safeSend delivers the final AI reply as a brand-new message (replied to the
+// user's message). Oversized replies fall back to a short note + a file.
+func (a *App) safeSend(ctx context.Context, msg *telegram.Message, text string) error {
+	if len(text) > maxMessageLength {
+		_ = a.safeReply(ctx, msg, "⚠️ Respon terlalu panjang, dikirim sebagai file.", false)
+		_, err := a.tg.SendFile(ctx, msg.Chat.ID, "respon.md", []byte(text), "sendDocument",
+			map[string]any{"caption": "Respon lengkap terlalu panjang untuk ditampilkan di chat."})
+		return err
+	}
+	return a.safeReply(ctx, msg, text, true)
 }
 
 func (a *App) safeEdit(ctx context.Context, chatID, msgID int64, text string) error {

@@ -49,6 +49,29 @@ type Agent struct {
 	Registry   *skills.Registry
 	HTTP       *http.Client
 	ToolsBuild func(opts *ProcessOptions) (map[string]*Tool, error)
+	// ClientFor resolves a model client for a chat, allowing users to use
+	// their own API settings. Nil means every chat uses Client. Each request
+	// builds its own Client (from settings) so parallel users never share a
+	// mutating struct.
+	ClientFor func(ctx context.Context, chatID int64) *Client
+}
+
+// clientFor picks the client for the request's chat: the per-chat resolver
+// when configured, otherwise the shared default client.
+func (a *Agent) clientFor(ctx context.Context, chatID int64) *Client {
+	if a.ClientFor != nil {
+		if c := a.ClientFor(ctx, chatID); c != nil {
+			return c
+		}
+	}
+	return a.Client
+}
+
+func (a *Agent) clientForOpts(ctx context.Context, opts *ProcessOptions) *Client {
+	if opts == nil {
+		return a.clientFor(ctx, 0)
+	}
+	return a.clientFor(ctx, opts.ChatID)
 }
 
 type ProcessOptions struct {
@@ -231,8 +254,9 @@ func (a *Agent) runOnce(ctx context.Context, base []*messages.Message, opts *Pro
 
 	res := &runResult{}
 	for step := 0; step < maxSteps; step++ {
+		client := a.clientForOpts(ctx, opts)
 		stepCtx, cancel := context.WithTimeout(ctx, stepTimeout)
-		chatResp, err := a.Client.Chat(stepCtx, toWireMessages(work), toolSpecs(tools), a.Config.Temperature, 0)
+		chatResp, err := client.Chat(stepCtx, toWireMessages(work), toolSpecs(tools), a.Config.Temperature, 0)
 		if err != nil {
 			cancel()
 			return nil, err

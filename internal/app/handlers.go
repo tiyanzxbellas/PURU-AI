@@ -17,7 +17,8 @@ const menuText = "*PURU-AI*\n\n" +
 	"CMD: /clear\nDESC: \"Hapus riwayat percakapan\"\n\n" +
 	"CMD: /token\nDESC: \"Lihat penggunaan token\"\n\n" +
 	"CMD: /info\nDESC: \"Lihat info memori\"\n\n" +
-	"CMD: /reset\nDESC: \"Reset semua data (riwayat dan file)\"\n\n" +
+	"CMD: /config\nDESC: \"Atur API sendiri (api key, model, base URL)\"\n\n" +
+	"CMD: /reset\nDESC: \"Reset data — /reset config, /reset memory, /reset chat\"\n\n" +
 	"CMD: /ai <pesan>\nDESC: \"Mengobrol dengan AI (khusus grup)\"\n\n" +
 	"---SKILLS-MENU---\n\n" +
 	"CMD: /skills\nDESC: \"Lihat daftar skill\"\n\n" +
@@ -84,9 +85,9 @@ func (a *App) dispatchCommand(ctx context.Context, msg *telegram.Message) error 
 		_ = a.hist.DeleteHistory(ctx, msg.From.ID)
 		return a.safeReply(ctx, msg, "Riwayat percakapan telah dihapus!", true)
 	case "/reset":
-		_ = a.hist.DeleteHistory(ctx, msg.From.ID)
-		_ = a.vfs.DeleteAll(ctx, msg.From.ID)
-		return a.safeReply(ctx, msg, "🗑️ Semua data Anda (riwayat percakapan & file VFS) telah dihapus.", true)
+		return a.cmdReset(ctx, msg)
+	case "/config":
+		return a.cmdConfig(ctx, msg)
 	case "/token":
 		return a.cmdToken(ctx, msg)
 	case "/info":

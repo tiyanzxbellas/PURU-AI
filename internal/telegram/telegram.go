@@ -250,6 +250,14 @@ func (a *API) EditMessageText(ctx context.Context, chatID int64, messageID int64
 	return a.do(ctx, "editMessageText", v, nil)
 }
 
+func (a *API) DeleteMessage(ctx context.Context, chatID int64, messageID int64) error {
+	v := url.Values{}
+	v.Set("chat_id", strconv.FormatInt(chatID, 10))
+	v.Set("message_id", strconv.FormatInt(messageID, 10))
+	_, err := a.do(ctx, "deleteMessage", v, nil)
+	return err
+}
+
 func (a *API) SendFile(ctx context.Context, chatID int64, filename string, data []byte, method string, opts map[string]any) (json.RawMessage, error) {
 	v := params(opts)
 	v.Set("chat_id", strconv.FormatInt(chatID, 10))

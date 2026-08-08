@@ -24,10 +24,22 @@ Read the old MEMORY.md and the recent conversation, then write a new MEMORY.md:
 type Manager struct {
 	client *ai.Client
 	vfs    *vfs.VFS
+	// ClientFor resolves the model client per chat so users with their own API
+	// settings get memory updates through their key too. Nil uses client.
+	ClientFor func(ctx context.Context, chatID int64) *ai.Client
 }
 
 func New(client *ai.Client, v *vfs.VFS) *Manager {
 	return &Manager{client: client, vfs: v}
+}
+
+func (m *Manager) clientFor(ctx context.Context, chatID int64) *ai.Client {
+	if m.ClientFor != nil {
+		if c := m.ClientFor(ctx, chatID); c != nil {
+			return c
+		}
+	}
+	return m.client
 }
 
 func messageToText(m *messages.Message) string {
@@ -77,7 +89,7 @@ func (m *Manager) UpdateMemory(ctx context.Context, chatID int64, recent []*mess
 		historyText = "(tidak ada)"
 	}
 
-	text, err := m.client.ChatSystem(ctx, memoryPrompt,
+	text, err := m.clientFor(ctx, chatID).ChatSystem(ctx, memoryPrompt,
 		"memory/MEMORY.md lama:\n"+current+"\n\nPercakapan terakhir:\n"+historyText,
 		memoryMaxOutput)
 	if err != nil {

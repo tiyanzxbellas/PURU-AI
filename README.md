@@ -7,7 +7,7 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 - **AI Chat** — agent tool-loop port dari `ToolLoopAgent` (Vercel AI SDK) yang memanggil model streaming (SSE) dan menjalankan 22 tools
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools
 - **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via pemanggilan AI internal (maks 10 poin bernomor)
-- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali
+- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali. Pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi (via `finish`) tanpa menebak dengan tool
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
 - **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`)
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
@@ -17,6 +17,12 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti
 - **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; context step tetap hidup sampai semua tool selesai (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse
+- **Per-user API Config** — user bisa memakai API sendiri (`/config api|model|base`) disimpan di Firebase RTDB, partial override atas default server; resolusi client per request sehingga aman paralel
+- **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
+
+> ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
+- **Paralel antar-user** — semua user diproses bersamaan (tanpa antrian); jika user yang sama mengirim pesan saat request masih berjalan, dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...`
+- **Jawaban final sebagai pesan baru** — hasil AI dikirim sebagai pesan baru (bukan edit), placeholder "🤔 sedang berpikir..." dihapus setelah jawaban terkirim
 
 ## Commands
 
@@ -27,7 +33,16 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 | `/clear` | Menghapus riwayat percakapan |
 | `/token` | Melihat penggunaan token |
 | `/info` | Melihat info memory (`/info memory`) |
-| `/reset` | Menghapus semua data (riwayat + file VFS) |
+| `/config` | Melihat status API yang dipakai |
+| `/config api <key>` | Set API key sendiri |
+| `/config model <nama>` | Set model sendiri |
+| `/config base <url>` | Set base URL sendiri (OpenAI-compatible) |
+| `/config clear` | Hapus pengaturan API sendiri (kembali ke default server) |
+| `/config test` | Tes koneksi ke API yang dipakai |
+| `/reset` | Melihat daftar reset |
+| `/reset config` | Hapus pengaturan API sendiri |
+| `/reset memory` | Hapus MEMORY.md (ingatan user) |
+| `/reset chat` | Hapus riwayat percakapan + file VFS |
 | `/skills` | Menampilkan daftar skill |
 | `/skills search <query>` | Mencari skill dari GitHub |
 | `/skills install <url>` | Install skill dari GitHub (dukung `https://github.com/...` atau `owner/repo`) |
@@ -46,12 +61,13 @@ main.go                 — entrypoint: config, health server, long-poll loop + 
 internal/
 ├── config/             — config loader & validasi env
 ├── telegram/           — klien Bot API (long-poll synchronous, send/edit/upload, download)
-├── app/                — dispatcher command, pipeline pesan, safe reply/edit
+├── app/                — dispatcher command, busy-guard per-user, pipeline pesan, safe reply/send
 ├── ai/                 — client chat/completions + agent (22 tool) + processMessage (retry & guard)
 ├── messages/           — ModelMessage (kompatibel Vercel AI SDK v7), pruneMessages port
 ├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url)
 ├── vfs/                — virtual file system per-user
 ├── history/            — history persistence (LRU+TTL + RTDB)
+├── settings/           — per-user API config (base URL/key/model) di RTDB + cache TTL
 ├── tokens/             — tiktoken-go (o200k_base)
 ├── skills/             — loader/manifest SKILL.md + registry GitHub
 ├── prompt/             — system prompt (text/template, braces di-escape)
@@ -138,7 +154,7 @@ GitHub Actions otomatis build & push ke Docker Hub saat push ke `main`. Secrets 
 |---------|-----------|
 | `go run .` | Jalankan bot lokal |
 | `go build -o dist/puru-ai .` | Compile binary |
-| `go test ./...` | Unit test (ai, jsrun, messages, prompt) |
+| `go test ./...` | Unit test (ai, jsrun, messages, prompt, settings) |
 | `go vet ./...` | Static analysis |
 | `gofmt -l .` | Cek format |
 

@@ -20,6 +20,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/health"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
+	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
@@ -36,6 +37,7 @@ func main() {
 	hc := &http.Client{}
 
 	fb := firebase.New(cfg.PublicRTDB, hc)
+	settingsSvc := settings.New(fb, 60*time.Second)
 	vfsSvc := vfs.New(fb)
 	histStore := history.New(fb, cfg.HistoryCacheMax, cfg.HistoryCacheTTL)
 	catalogSvc := skills.NewCatalog(vfsSvc)
@@ -43,18 +45,33 @@ func main() {
 	e2bSvc := e2b.NewManager(cfg.E2BApiKey, cfg.E2BDomain, hc)
 
 	llm := &ai.Client{BaseURL: cfg.AI.BaseURL, APIKey: cfg.AI.APIKey, Model: cfg.AI.Model, HTTP: hc}
+	// clientFor resolves the model client per chat: users with their own API
+	// settings (settings/{chatID} in RTDB) get their own endpoint/key/model,
+	// everything else inherits the server default. Each request builds a fresh
+	// Client over the shared http.Client, so parallel users never share a
+	// mutating struct.
+	clientFor := func(ctx context.Context, chatID int64) *ai.Client {
+		aiCfg := cfg.AI
+		if u := settingsSvc.Get(ctx, chatID); u != nil {
+			aiCfg = settings.Effective(aiCfg, u)
+		}
+		return &ai.Client{BaseURL: aiCfg.BaseURL, APIKey: aiCfg.APIKey, Model: aiCfg.Model, HTTP: hc}
+	}
 	agentSvc := &ai.Agent{
-		Client:   llm,
-		Config:   cfg,
-		VFS:      vfsSvc,
-		E2B:      e2bSvc,
-		Catalog:  catalogSvc,
-		Registry: registrySvc,
-		HTTP:     hc,
+		Client:    llm,
+		Config:    cfg,
+		VFS:       vfsSvc,
+		E2B:       e2bSvc,
+		Catalog:   catalogSvc,
+		Registry:  registrySvc,
+		HTTP:      hc,
+		ClientFor: clientFor,
 	}
 	memSvc := memory.New(llm, vfsSvc)
+	memSvc.ClientFor = clientFor
 	tg := telegram.New(cfg.TelegramBotToken, hc)
 	appSvc := app.New(cfg, tg, histStore, vfsSvc, agentSvc, memSvc, catalogSvc, registrySvc)
+	appSvc.Settings = settingsSvc
 
 	// Health server (bind failures are non-fatal for the bot).
 	srv := health.Serve(cfg.Hostname, cfg.Port)
@@ -99,7 +116,9 @@ func main() {
 		}
 		conflictCount = 0
 
-		// Process updates one by one (sequential, low RAM).
+		// Advance offset and dispatch. Handle returns immediately: each user's
+		// work runs in its own goroutine (parallel across users, same user is
+		// busy-guarded in the app layer).
 		for _, u := range updates {
 			offset = u.UpdateID + 1
 			if err := appSvc.Handle(ctx, &u); err != nil {
