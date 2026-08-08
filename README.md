@@ -11,12 +11,12 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
 - **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`, template default `code-interpreter-v1`)
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
-- **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery)
+- **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery); request memakai User-Agent browser agar situs yang memblokir client non-browser (mis. Wikipedia HTTP 403 untuk `Go-http-client/1.1`) tetap bisa di-crawl; snippet boleh berbentuk ekspresi (`$("h1").text()`) maupun statement `return {...};` (dinormalisasi otomatis)
 - **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
 - **Group Chat** — gunakan `/ai <pesan>` di grup
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti
 - **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; context step tetap hidup sampai semua tool selesai (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
-- **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse
+- **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse; semua teks keluar di-sanitasi jadi valid UTF-8 (`strings.ToValidUTF8`) agar tidak kena `400 text must be encoded in UTF-8`
 - **Per-user API Config** — user bisa memakai API sendiri (`/config api|model|base`) disimpan di Firebase RTDB, partial override atas default server; resolusi client per request sehingga aman paralel
 - **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
 

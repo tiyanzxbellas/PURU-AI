@@ -57,6 +57,17 @@ func TestRunCheerioUnknownMethod(t *testing.T) {
 	}
 }
 
+func TestRunCheerioReturnStatement(t *testing.T) {
+	html := `<html><body><h1>Judul</h1><p>Paragraf pertama</p></body></html>`
+	res, _, err := RunCheerio(html, `return {title: $("h1").text(), first: $("p").first().text()};`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(res, "Judul") || !strings.Contains(res, "Paragraf pertama") {
+		t.Fatalf("unexpected result: %q", res)
+	}
+}
+
 func TestEvalMath(t *testing.T) {
 	res, err := EvalMath("sqrt(144) * (25 + 5)")
 	if err != nil {

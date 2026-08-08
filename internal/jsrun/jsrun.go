@@ -231,7 +231,7 @@ func RunCheerio(html, code string) (result string, consoleOutput string, err err
 		return "", "", errors.New("jsrun: cheerio shim failed to compile")
 	}
 
-	program := "(function(){\"use strict\"; return (" + code + ");}())"
+	program := "(function(){\"use strict\"; return (" + normalizeCheerioCode(code) + ");}())"
 	interrupt := time.AfterFunc(10*time.Second, func() { vm.Interrupt("cheerio script timeout") })
 	defer interrupt.Stop()
 	val, rerr := vm.RunString(program)
@@ -245,6 +245,20 @@ func RunCheerio(html, code string) (result string, consoleOutput string, err err
 	result = stringifyValue(vm, val)
 	consoleOutput = strings.Join(capture, "\n")
 	return result, consoleOutput, nil
+}
+
+// normalizeCheerioCode makes the tool tolerant of the two ways the model
+// writes snippets: a bare expression ("$(\"h1\").text()") or a statement with
+// a leading return ("return {...};"), which would otherwise be a syntax error
+// once wrapped in the evaluator's own return.
+func normalizeCheerioCode(code string) string {
+	c := strings.TrimSpace(code)
+	if strings.HasPrefix(c, "return") && (len(c) == len("return") || c[len("return")] == ' ' || c[len("return")] == '\t' || c[len("return")] == '\n') {
+		c = strings.TrimSpace(c[len("return"):])
+	}
+	c = strings.TrimSpace(c)
+	c = strings.TrimSuffix(c, ";")
+	return strings.TrimSpace(c)
 }
 
 func stringifyValue(vm *goja.Runtime, v goja.Value) string {
