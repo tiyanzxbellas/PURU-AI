@@ -15,7 +15,7 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 - **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
 - **Group Chat** — gunakan `/ai <pesan>` di grup
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti
-- **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
+- **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; context step tetap hidup sampai semua tool selesai (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse
 
 ## Commands
@@ -138,7 +138,7 @@ GitHub Actions otomatis build & push ke Docker Hub saat push ke `main`. Secrets 
 |---------|-----------|
 | `go run .` | Jalankan bot lokal |
 | `go build -o dist/puru-ai .` | Compile binary |
-| `go test ./...` | Unit test (jsrun, messages, prompt) |
+| `go test ./...` | Unit test (ai, jsrun, messages, prompt) |
 | `go vet ./...` | Static analysis |
 | `gofmt -l .` | Cek format |
 

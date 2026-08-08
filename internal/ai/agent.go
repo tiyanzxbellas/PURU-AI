@@ -233,8 +233,8 @@ func (a *Agent) runOnce(ctx context.Context, base []*messages.Message, opts *Pro
 	for step := 0; step < maxSteps; step++ {
 		stepCtx, cancel := context.WithTimeout(ctx, stepTimeout)
 		chatResp, err := a.Client.Chat(stepCtx, toWireMessages(work), toolSpecs(tools), a.Config.Temperature, 0)
-		cancel()
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 
@@ -275,6 +275,7 @@ func (a *Agent) runOnce(ctx context.Context, base []*messages.Message, opts *Pro
 		res.responseMessages = append(res.responseMessages, assistant)
 
 		if len(chatResp.ToolCalls) == 0 {
+			cancel()
 			break
 		}
 
@@ -311,6 +312,7 @@ func (a *Agent) runOnce(ctx context.Context, base []*messages.Message, opts *Pro
 			work = append(work, toolMsg)
 			res.responseMessages = append(res.responseMessages, toolMsg)
 		}
+		cancel()
 
 		if res.finishMessage != "" {
 			break

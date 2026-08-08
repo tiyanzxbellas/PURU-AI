@@ -41,7 +41,7 @@
 
 ## Perilaku Penting (dipertahankan dari generasi sebelumnya)
 - **Retry**: API call retry hingga 4 kali dengan exponential backoff (1s→2s→4s→8s, cap 30s). Error 4xx selain 408/429 TIDAK di-retry (`isNonRetryableError`). Web search retry 5 kali (1s→16s, cap 30s).
-- **Timeout agent** (`agent.go`): per-step 120s, per-tool 120s, total 300s via `context.WithTimeout`; model dipanggil streaming (SSE) tapi hasil dirangkai penuh.
+- **Timeout agent** (`agent.go`): per-step 120s, per-tool 120s, total 300s via `context.WithTimeout`; model dipanggil streaming (SSE) tapi hasil dirangkai penuh. **Context step WAJIB tetap hidup sampai semua tool selesai dieksekusi** — `cancel()` hanya dipanggil setelah loop tool, saat break tanpa tool call, atau saat error Chat (regresi lama: `cancel()` prematur setelah Chat membuat semua tool HTTP gagal `context canceled`; dijaga oleh `internal/ai/agent_test.go`).
 - **Batas data**: crawl baca body max 1.5MB & hasil max 20k char (tool), `read_file` max 30 ribu char; upload dokumen max 10MB; isi history di-truncate max 8k char/message (`messages.Sanitize`).
 - **Persistensi history**: path `history/{chat}/messages|tokens|meta` di RTDB, LRU+TTL di dalam proses (hasil getHistory berupa copy; array kosong tidak di-cache). JSON schema = `ModelMessage` Vercel AI SDK v7 → data user lama tetap terbaca & round-trip field tidak hilang.
 - **Batas history**: sebelum dikirim ke model, history di-prune (`reasoning: before-last-message`, `toolCalls: before-last-6-messages`, kosong dihapus) lalu di-cap maksimal 5 pesan user (`messages.CapUserTurns`).
