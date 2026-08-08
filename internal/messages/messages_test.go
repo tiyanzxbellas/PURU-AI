@@ -81,6 +81,39 @@ func TestSanitizeTruncatesText(t *testing.T) {
 	}
 }
 
+func TestSanitizeDropsEmptyTextParts(t *testing.T) {
+	m := &Message{Role: "assistant"}
+	SetContentParts(m, []Part{
+		{"type": []byte(`"text"`), "text": []byte(`"\n"`)},
+		{"type": []byte(`"tool-call"`), "toolCallId": []byte(`"c1"`), "toolName": []byte(`"finish"`), "input": []byte(`{}`)},
+	})
+	got := SanitizeMessage(m)
+	parts := ContentParts(got)
+	if len(parts) != 1 || parts[0].Type() != "tool-call" {
+		t.Fatalf("expected only tool-call part to survive, got %d parts", len(parts))
+	}
+}
+
+func TestSanitizeHistoryDropsStubs(t *testing.T) {
+	partStub := &Message{Role: "assistant"}
+	SetContentParts(partStub, []Part{{"type": []byte(`"text"`), "text": []byte(`"\n"`)}})
+
+	stringStub := makeMsg("assistant", " \n ")
+
+	kept := &Message{Role: "assistant"}
+	SetContentParts(kept, []Part{
+		{"type": []byte(`"tool-call"`), "toolCallId": []byte(`"c1"`), "toolName": []byte(`"finish"`), "input": []byte(`{}`)},
+	})
+
+	out := SanitizeHistoryMessages([]*Message{partStub, stringStub, kept, makeMsg("user", "hi")})
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages (kept + user), got %d", len(out))
+	}
+	if out[0].Role != "assistant" || out[1].Role != "user" {
+		t.Fatalf("unexpected messages kept: %+v", out)
+	}
+}
+
 func firstNonSystemRole(msgs []*Message) string {
 	for _, m := range msgs {
 		if m.Role != "system" {

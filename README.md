@@ -7,9 +7,9 @@ Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file syst
 - **AI Chat** — agent tool-loop port dari `ToolLoopAgent` (Vercel AI SDK) yang memanggil model streaming (SSE) dan menjalankan 22 tools
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools
 - **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via pemanggilan AI internal (maks 10 poin bernomor)
-- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali. Pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi (via `finish`) tanpa menebak dengan tool
+- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali. Hanya round yang menyelesaikan turn yang dipersist ke history — stub text-only kosong dari round yang ditegur tidak mencemari konteks. Pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi (via `finish`) tanpa menebak dengan tool
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
-- **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`)
+- **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`, template default `code-interpreter-v1`)
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
 - **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery)
 - **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
@@ -133,6 +133,7 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
 | `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
+| `E2B_TEMPLATE` | `code-interpreter-v1` | Template sandbox E2B untuk eksekusi kode (template `default` sudah dihapus dari platform E2B) |
 
 ## Docker
 

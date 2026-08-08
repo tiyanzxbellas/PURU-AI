@@ -430,17 +430,23 @@ func (a *Agent) ProcessMessage(ctx context.Context, userMessage string, history 
 				runErr = rerr
 				break
 			}
-			allResp = append(allResp, run.responseMessages...)
 			totalTokens += run.totalTokens
 			lastUsage = run.lastStepUsage
 
+			// Only rounds that finish the turn are persisted to history.
+			// Text-only stubs that trigger the scold correction are kept out
+			// of allResp so empty/garbled intermediates do not pollute the
+			// stored conversation.
 			if strings.TrimSpace(run.finishMessage) != "" {
+				allResp = append(allResp, run.responseMessages...)
 				return makeResult(run.finishMessage, allResp, totalTokens, lastUsage)
 			}
 			if run.hitStepLimit {
+				allResp = append(allResp, run.responseMessages...)
 				return makeResult(stepLimitHint, allResp, totalTokens, lastUsage)
 			}
 			if run.lastStepHasToolCalls {
+				allResp = append(allResp, run.responseMessages...)
 				if strings.TrimSpace(run.finalText) == "" {
 					run.finalText = run.text
 				}
@@ -463,6 +469,8 @@ func (a *Agent) ProcessMessage(ctx context.Context, userMessage string, history 
 				base = append(base, textMsg("user", scoldPrompt))
 				continue
 			}
+			// Final corrected round: persist and return its answer.
+			allResp = append(allResp, run.responseMessages...)
 			if strings.TrimSpace(run.finalText) != "" {
 				return makeResult(run.finalText, allResp, totalTokens, lastUsage)
 			}
@@ -503,6 +511,9 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 func makeResult(text string, resp []*messages.Message, total int, usage Usage) *ProcessResult {
+	if strings.TrimSpace(text) == "" {
+		text = "Maaf, saya tidak bisa merespons saat ini."
+	}
 	return &ProcessResult{Text: text, ResponseMessages: resp, TotalTokens: total, LastStepUsage: usage}
 }
 

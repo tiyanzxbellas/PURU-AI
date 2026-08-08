@@ -362,13 +362,43 @@ func CapUserTurns(history []*Message) []*Message {
 }
 
 // SanitizeHistoryMessages truncates stored message content (8k char limit per
-// message/part) so large tool outputs do not pile up in cache or Firebase.
+// message/part) so large tool outputs do not pile up in cache or Firebase. It
+// also drops assistant stubs that carry no real content (e.g. empty/whitespace
+// text parts from interrupted protocol-violation rounds).
 func SanitizeHistoryMessages(msgs []*Message) []*Message {
 	out := make([]*Message, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, SanitizeMessage(m))
+		c := SanitizeMessage(m)
+		if c == nil || (IsAssistant(c) && isEmptyStub(c)) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// isEmptyStub reports whether an assistant message carries no content worth
+// persisting: whitespace-only text and no tool-call/tool-result/reasoning
+// parts (e.g. the intermediate "\n" produced before a scold correction).
+func isEmptyStub(m *Message) bool {
+	if len(m.Extra("toolCalls")) > 0 {
+		return false
+	}
+	if IsParts(m) {
+		for _, p := range ContentParts(m) {
+			switch p.Type() {
+			case "tool-call", "tool-result", "reasoning", "reasoning-file":
+				return false
+			}
+		}
+	}
+	if ContentNull(m) {
+		return true
+	}
+	if s, ok := ContentString(m); ok {
+		return strings.TrimSpace(s) == ""
+	}
+	return true
 }
 
 func truncateString(s string, max int) string {
@@ -386,17 +416,28 @@ func SanitizeMessage(m *Message) *Message {
 	}
 	if IsParts(c) {
 		parts := ContentParts(c)
+		out := make([]Part, 0, len(parts))
 		for i := range parts {
 			p := &parts[i]
-			if p.Type() == "text" {
-				p.SetText(truncateString(p.Text(), MaxStoredContent))
-			} else if p.Type() == "tool-call" {
+			switch p.Type() {
+			case "text":
+				t := p.Text()
+				if strings.TrimSpace(t) == "" {
+					continue // drop empty/whitespace text parts
+				}
+				p.SetText(truncateString(t, MaxStoredContent))
+			case "tool-call":
 				if raw, ok := (*p)["input"]; ok && len(raw) > MaxStoredContent {
 					(*p)["input"] = json.RawMessage(`"[truncated tool input]"`)
 				}
 			}
+			out = append(out, *p)
 		}
-		SetContentParts(c, parts)
+		if len(out) == 0 {
+			c.Content = nil
+		} else {
+			SetContentParts(c, out)
+		}
 	}
 	// Legacy v5/v6 top-level toolCalls with args.
 	if tc := c.Extra("toolCalls"); len(tc) > 0 {

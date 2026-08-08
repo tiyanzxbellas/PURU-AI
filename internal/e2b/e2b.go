@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	defaultDomain  = "e2b.app"
-	jupyterPort    = 49999
-	envdPort       = 49983
-	sandboxTTL     = 5 * time.Minute
-	requestTimeout = 70 * time.Second
-	executeBodyMax = 8 << 20
+	defaultDomain   = "e2b.app"
+	defaultTemplate = "code-interpreter-v1"
+	jupyterPort     = 49999
+	envdPort        = 49983
+	sandboxTTL      = 5 * time.Minute
+	requestTimeout  = 70 * time.Second
+	executeBodyMax  = 8 << 20
 )
 
 type sandboxInfo struct {
@@ -154,7 +155,7 @@ func (m *Manager) CreateSandbox(ctx context.Context, chatID int64) (string, erro
 		return existing.sandboxID, nil
 	}
 	payload := map[string]any{
-		"templateID":            "default",
+		"templateID":            templateID(),
 		"timeout":               300,
 		"secure":                true,
 		"allow_internet_access": true,
@@ -361,6 +362,17 @@ func (m *Manager) WriteFile(ctx context.Context, chatID int64, path, content str
 
 func getEnv(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
+}
+
+// templateID returns the E2B sandbox template used for code interpretation,
+// overridable via the E2B_TEMPLATE environment variable. The "default"
+// template was removed from the E2B platform; the code-interpreter SDK now
+// ships code-interpreter-v1 as its default template.
+func templateID() string {
+	if t := getEnv("E2B_TEMPLATE"); t != "" {
+		return t
+	}
+	return defaultTemplate
 }
 
 func truncate(s string, n int) string {
