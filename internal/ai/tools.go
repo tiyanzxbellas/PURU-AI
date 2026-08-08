@@ -408,7 +408,7 @@ var toolDescriptions = map[string]string{
 	"move_file":           "Memindahkan atau mengganti nama file di virtual file system dari satu lokasi ke lokasi lain.",
 	"send_file":           "Membaca file dari virtual file system dan mengirimkannya langsung ke chat Telegram pengguna.",
 	"search_web":          "Mencari informasi di web menggunakan Yahoo Search. Gunakan untuk mencari berita, artikel, atau informasi terkini.",
-	"crawl":               `Mengunjungi URL website dan menjalankan kode cheerio untuk mengekstrak data. Tulis kode cheerio menggunakan $ sebagai selector, contoh: $("h1").text().`,
+	"crawl":               `Mengunjungi URL website dan menjalankan kode cheerio untuk mengekstrak data. Tulis kode cheerio sebagai ekspresi menggunakan $ sebagai selector, contoh: $("h1").text() (boleh juga pakai return, mis. return $("h1").text();).`,
 	"get_current_time":    "Mendapatkan informasi tanggal dan waktu saat ini berdasarkan zona waktu tertentu.",
 	"calculate_math":      "Mengevaluasi ekspresi matematika untuk menghindari kesalahan hitung manual.",
 	"e2b_sandbox_create":  "Membuat instans sandbox cloud E2B baru yang terisolasi dengan akses Linux dan internet. Setiap chat hanya bisa memiliki satu sandbox aktif.",
@@ -463,7 +463,7 @@ func init() {
 	})
 	toolSchemas["crawl"] = obj([]string{"url", "code"}, map[string]any{
 		"url":  sp(`URL website yang ingin di-crawl (contoh: "https://example.com/article").`),
-		"code": sp(`Kode cheerio untuk mengekstrak data dari halaman. Gunakan $ sebagai root cheerio instance. Contoh: $("h1").text().`),
+		"code": sp(`Kode cheerio untuk mengekstrak data dari halaman. Gunakan $ sebagai root cheerio instance. Contoh: $("h1").text() — boleh juga pakai return, mis. return {title: $("h1").text()};.`),
 	})
 	toolSchemas["get_current_time"] = obj([]string{"zone"}, map[string]any{
 		"zone": sp(`Kode identifier zona waktu IANA (contoh: "Asia/Jakarta", "UTC").`),

@@ -34,7 +34,10 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	hc := &http.Client{}
+	// Shared HTTP client. A browser-like User-Agent is injected on outbound
+	// requests so sites that block non-browser clients (e.g. Wikipedia HTTP
+	// 403 for "Go-http-client/1.1") stay reachable for the crawl tool.
+	hc := &http.Client{Transport: browserTransport()}
 
 	fb := firebase.New(cfg.PublicRTDB, hc)
 	settingsSvc := settings.New(fb, 60*time.Second)
@@ -126,4 +129,23 @@ func main() {
 			}
 		}
 	}
+}
+
+// browserUA is a common Chrome user agent string; sites like Wikipedia reject
+// the default Go HTTP client identifier ("Go-http-client/1.1") with 403.
+const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+
+type uaTransport struct {
+	base http.RoundTripper
+}
+
+func (t *uaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", browserUA)
+	}
+	return t.base.RoundTrip(req)
+}
+
+func browserTransport() http.RoundTripper {
+	return &uaTransport{base: http.DefaultTransport.(*http.Transport).Clone()}
 }

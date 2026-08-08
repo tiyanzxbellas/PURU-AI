@@ -169,7 +169,7 @@ func params(m map[string]any) url.Values {
 func toParam(v any) string {
 	switch t := v.(type) {
 	case string:
-		return t
+		return sanitizeText(t)
 	case int:
 		return strconv.Itoa(t)
 	case int64:
@@ -183,6 +183,13 @@ func toParam(v any) string {
 		b, _ := json.Marshal(t)
 		return string(b)
 	}
+}
+
+// sanitizeText replaces invalid UTF-8 byte sequences (which can leak in from
+// model output or scraped content) with U+FFFD so Telegram never rejects the
+// request with "400 text must be encoded in UTF-8".
+func sanitizeText(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 func truncate(s string, n int) string {
@@ -238,7 +245,7 @@ func (a *API) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Upda
 func (a *API) SendMessage(ctx context.Context, chatID int64, text string, opts map[string]any) (json.RawMessage, error) {
 	v := params(opts)
 	v.Set("chat_id", strconv.FormatInt(chatID, 10))
-	v.Set("text", text)
+	v.Set("text", sanitizeText(text))
 	return a.do(ctx, "sendMessage", v, nil)
 }
 
@@ -246,7 +253,7 @@ func (a *API) EditMessageText(ctx context.Context, chatID int64, messageID int64
 	v := params(opts)
 	v.Set("chat_id", strconv.FormatInt(chatID, 10))
 	v.Set("message_id", strconv.FormatInt(messageID, 10))
-	v.Set("text", text)
+	v.Set("text", sanitizeText(text))
 	return a.do(ctx, "editMessageText", v, nil)
 }
 
