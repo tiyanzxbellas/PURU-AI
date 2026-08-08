@@ -1,22 +1,22 @@
 # PURU-AI Telegram Bot
 
-Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system berbasis Firebase, memory user, AI tools, dan chat history per-user.
+Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file system berbasis Firebase, memory user, AI tools, dan chat history per-user.
 
 ## Fitur
 
-- **AI Chat** — AI konversasional menggunakan `ToolLoopAgent` dari Vercel AI SDK dengan streaming respons
-- **Virtual File System (VFS)** — Setiap user mendapatkan file system pribadi yang disimpan di Firebase (Realtime Database), dapat diakses via AI tools
-- **User Memory** — Konteks percakapan & info user disimpan di satu file (`/memory/MEMORY.md`) dan di-inject ke system prompt. MEMORY.md di-update otomatis setiap 3 pesan user via pemanggilan AI internal dengan format minimal (maks 10 poin bernomor, data lama bisa diganti)
-- **Anti-Halusinasi** — System prompt melarang klaim tanpa tool call, basa-basi, dan filler; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif netral ber-tag `[system]` yang menyuruh melanjutkan & menyelesaikan via `finish`, lalu dijalankan ulang sekali
-- **Persistent History** — Chat history tetap tersimpan setelah bot restart via Firebase RTDB + LRU cache
-- **E2B Sandbox** — Eksekusi kode di lingkungan cloud terisolasi dengan instalasi package otomatis
-- **Web Search** — Integrasi pencarian Yahoo dengan automatic retry (5x exponential backoff)
-- **Web Crawl** — Ambil dan ringkas konten website
-- **Math & Time** — Evaluasi matematika bawaan dan tools jam dengan timezone
-- **Group Chat** — Gunakan `/ai <pesan>` untuk berinteraksi dengan bot di grup
-- **Exponential Backoff** — Retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Web search retry 5 kali (1s→16s)
-- **Timeouts & Batas Memori** — `ToolLoopAgent` dibatasi timeout total 5 menit, per-step & per-tool 2 menit; `crawl` max 1.5MB, `read_file` max 30k char, upload dokumen max 10MB, isi history di-truncate max 8k char/message
-- **Markdown Fallback** — Menangani error parse Telegram dengan retry tanpa parse mode
+- **AI Chat** — agent tool-loop port dari `ToolLoopAgent` (Vercel AI SDK) yang memanggil model streaming (SSE) dan menjalankan 22 tools
+- **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools
+- **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via pemanggilan AI internal (maks 10 poin bernomor)
+- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali
+- **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
+- **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`)
+- **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
+- **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery)
+- **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
+- **Group Chat** — gunakan `/ai <pesan>` di grup
+- **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti
+- **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
+- **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse
 
 ## Commands
 
@@ -37,58 +37,42 @@ Bot Telegram AI yang didukung oleh **Vercel AI SDK** dengan virtual file system 
 | `/skills migrate` | Migrate skill lama ke format baru |
 | `/ai <pesan>` | Mengobrol dengan AI (wajib di grup) |
 
-Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**, gunakan `/ai` diikuti pesan Anda. Gunakan `/skills` untuk mengelola skill AI.
+Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**, gunakan `/ai` diikuti pesan Anda.
 
 ## Arsitektur
 
 ```
-src/
-├── index.ts      — Entry point, memulai bot + health server
-├── bot.ts        — Setup Telegram bot (commands, message handler, safeReply/safeEdit)
-├── agent.ts      — ToolLoopAgent dengan 22 tools (toolChoice 'auto') + processMessage dengan retry + memory injection
-├── vfs.ts        — Firebase VFS (read, write, edit, delete, list, deleteAll)
-├── history.ts    — Chat history (LRU cache + Firebase RTDB persist)
-├── tools.ts      — ToolNames type union
-├── config.ts     — Config loader (env var BOT_TOKEN override)
-├── skills-loader.ts — Parsing metadata skill, listing, loading
-├── skills-registry.ts — Instalasi skill dari GitHub dan pencarian
-├── memory.ts     — Auto-update MEMORY.md internal (streamText)
-└── server.ts     — HTTP health check server (port 3000)
+main.go                 — entrypoint: config, health server, long-poll loop + conflict retry
+internal/
+├── config/             — config loader & validasi env
+├── telegram/           — klien Bot API (long-poll synchronous, send/edit/upload, download)
+├── app/                — dispatcher command, pipeline pesan, safe reply/edit
+├── ai/                 — client chat/completions + agent (22 tool) + processMessage (retry & guard)
+├── messages/           — ModelMessage (kompatibel Vercel AI SDK v7), pruneMessages port
+├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url)
+├── vfs/                — virtual file system per-user
+├── history/            — history persistence (LRU+TTL + RTDB)
+├── tokens/             — tiktoken-go (o200k_base)
+├── skills/             — loader/manifest SKILL.md + registry GitHub
+├── prompt/             — system prompt (text/template, braces di-escape)
+├── memory/             — auto-update MEMORY.md (chat completions SSE-tolerant)
+├── jsrun/              — goja: cheerio shim + evaluate math
+├── e2b/                — client E2B murni HTTP (sandbox/execute/files)
+└── health/             — HTTP health check
 ```
 
-### Tools yang Tersedia untuk AI
+## Tools yang Tersedia untuk AI
 
-1. **list_directory** — Lihat daftar file/folder di direktori VFS
-2. **read_file** — Baca isi file dari VFS
-3. **write_file** — Tulis/buat file di VFS
-4. **edit_file** — Cari dan ganti teks dalam file VFS
-5. **delete_file** — Hapus file dari VFS
-6. **move_file** — Pindahkan atau ganti nama file di VFS
-7. **send_file** — Kirim file dari VFS ke chat Telegram
-8. **search_web** — Pencarian Yahoo dengan retry
-9. **crawl** — Ambil dan ekstrak teks dari halaman web menggunakan cheerio
-10. **get_current_time** — Waktu saat ini di timezone IANA manapun
-11. **calculate_math** — Evaluasi ekspresi matematika
-12. **e2b_sandbox_create** — Buat sandbox E2B terisolasi
-13. **e2b_run_code** — Eksekusi kode dari VFS di sandbox E2B
-14. **e2b_install_package** — Install package di sandbox E2B
-15. **e2b_send_file** — Kirim file dari sandbox E2B ke Telegram
-16. **e2b_sandbox_kill** — Tutup sandbox E2B
-17. **create_skill** — Buat skill baru dengan metadata di direktori /skills/
-18. **use_skills** — Baca dan gunakan skill dari direktori /skills/
-19. **delete_skill** — Hapus skill dari direktori /skills/
-20. **search_skills** — Cari skill dari GitHub
-21. **install_skill** — Install skill dari repository GitHub
+list_directory, read_file, write_file, edit_file, delete_file, move_file, send_file, search_web, crawl, get_current_time, calculate_math, e2b_sandbox_create, e2b_run_code, e2b_install_package, e2b_send_file, e2b_sandbox_kill, create_skill, use_skills, delete_skill, search_skills, install_skill, finish.
 
 ## Tech Stack
 
-- [grammY](https://grammy.dev/) — Telegram Bot Framework
-- [Vercel AI SDK](https://sdk.vercel.ai/) — AI streaming, tool calling, `ToolLoopAgent`
-- [Firebase Realtime Database](https://firebase.google.com/) — Penyimpanan file user (VFS)
-- [@langchain/core](https://www.npmjs.com/package/@langchain/core) — Prompt template system
-- [lru-cache](https://www.npmjs.com/package/lru-cache) — LRU cache in-memory untuk chat history
-- [Zod](https://zod.dev/) — Validasi schema untuk input AI tools
-- TypeScript, Node.js
+- Go 1.26
+- [goja](https://github.com/dop251/goja) — runtime JS untuk kode cheerio & evaluasi math
+- [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing untuk crawl
+- [tiktoken-go](https://github.com/tiktoken-go/tokenizer) — tokenizer `o200k_base`
+- [godotenv](https://github.com/joho/godotenv) — load `.env`
+- Firebase Realtime Database — storage VFS & history
 
 ## Instalasi
 
@@ -98,19 +82,14 @@ git clone <repo-url>
 cd telegram-ai-bot
 ```
 
-2. Install dependencies:
-```
-npm install
-```
-
-3. Copy `.env.example` ke `.env` dan isi nilai Anda:
+2. Copy `.env.example` ke `.env` dan isi nilai Anda:
 ```
 cp .env.example .env
 ```
 
-4. Jalankan:
+3. Jalankan:
 ```
-npm run dev
+go run .
 ```
 
 ## Environment Variables
@@ -126,9 +105,9 @@ npm run dev
 
 Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kurang.
 
-### Variable Opsional
+### Variabel Opsional
 
-| Variable | Default | Deskripsi |
+| Variabel | Default | Deskripsi |
 |----------|---------|-----------|
 | `HOSTNAME` | `localhost` | Alamat bind server |
 | `PORT` | `3000` | Port server |
@@ -139,8 +118,6 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
 
-Variable ini opsional. Aplikasi menggunakan nilai default jika tidak diset.
-
 ## Docker
 
 Build dan jalankan dengan Docker:
@@ -149,15 +126,9 @@ docker build -t puru-ai .
 docker run -d --env-file .env -p 3000:3000 puru-ai
 ```
 
-Atau pull dari Docker Hub:
-```bash
-docker pull purujawa/puru-ai:latest
-docker run -d --env-file .env -p 3000:3000 purujawa/puru-ai:latest
-```
-
 ### CI/CD
 
-GitHub Actions secara otomatis build dan push ke Docker Hub saat push ke `main`. Secrets yang diperlukan:
+GitHub Actions otomatis build & push ke Docker Hub saat push ke `main`. Secrets yang digunakan:
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN`
 
@@ -165,11 +136,11 @@ GitHub Actions secara otomatis build dan push ke Docker Hub saat push ke `main`.
 
 | Command | Deskripsi |
 |---------|-----------|
-| `npm run dev` | Jalankan dengan nodemon + tsx (hot reload) |
-| `npm start` | Jalankan dengan tsx |
-| `npm run build` | Compile TypeScript |
-| `npm run build:bundle` | Bundle ke single file dengan esbuild |
-| `npm run typecheck` | Cek types tanpa emit |
+| `go run .` | Jalankan bot lokal |
+| `go build -o dist/puru-ai .` | Compile binary |
+| `go test ./...` | Unit test (jsrun, messages, prompt) |
+| `go vet ./...` | Static analysis |
+| `gofmt -l .` | Cek format |
 
 ## Lisensi
 
