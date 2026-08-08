@@ -1,4 +1,4 @@
-module github.com/purujawa/puru-ai
+module github.com/purujawa06-bot/PURU-AI
 
 go 1.26.5
 

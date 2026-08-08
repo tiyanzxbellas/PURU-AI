@@ -21,7 +21,7 @@
   - `MEMORY_UPDATE_EVERY` — interval pesan user untuk auto-update MEMORY.md (default: `3`)
   - `MEMORY_MAX_CHARS` — cap konten MEMORY.md saat di-inject (default: `8000`)
 
-## Arsitektur (Go, module `github.com/purujawa/puru-ai`)
+## Arsitektur (Go, module `github.com/purujawa06-bot/PURU-AI`)
 - `main.go` — entrypoint: config → health server → `getMe` → `deleteWebhook(drop_pending)` → konflict-retry loop (exit setelah 5 conflict berurut).
 - `internal/config` — config loader.
 - `internal/telegram` — klien Telegram Bot API **ditulis manual** (poling `getUpdates` synchronous, `sendMessage`, `editMessageText`, `sendDocument/Audio/Video`, `getFile`+download). Sebab utama ditulis sendiri: bot memproses update **sekali-sekali secara beruntun** (satu goroutine) seperti `bot.start()` di grammY, dan deteksi conflict (409) harus presisi.
@@ -55,7 +55,7 @@
 
 ## Konvensi
 - Go toolchain 1.26+; format `gofmt`; tidak ada linter wajib selain `go vet`.
-- Import internal memakai module path `github.com/purujawa/puru-ai/internal/...`.
+- Import internal memakai module path `github.com/purujawa06-bot/PURU-AI/internal/...`.
 - Response ke user dalam Bahasa Indonesia & singkat; system prompt bahasa Inggris.
 - **Setiap perubahan codebase WAJIB di-update `AGENTS.md` dan `README.md`.**
 

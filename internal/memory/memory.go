@@ -7,9 +7,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/purujawa/puru-ai/internal/ai"
-	"github.com/purujawa/puru-ai/internal/messages"
-	"github.com/purujawa/puru-ai/internal/vfs"
+	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
 const memoryMaxOutput = 2000

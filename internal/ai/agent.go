@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/purujawa/puru-ai/internal/config"
-	"github.com/purujawa/puru-ai/internal/e2b"
-	"github.com/purujawa/puru-ai/internal/messages"
-	"github.com/purujawa/puru-ai/internal/prompt"
-	"github.com/purujawa/puru-ai/internal/skills"
-	"github.com/purujawa/puru-ai/internal/vfs"
+	"github.com/purujawa06-bot/PURU-AI/internal/config"
+	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/prompt"
+	"github.com/purujawa06-bot/PURU-AI/internal/skills"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
 const (

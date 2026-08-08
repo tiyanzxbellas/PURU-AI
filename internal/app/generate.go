@@ -6,11 +6,11 @@ import (
 	"log"
 	"strings"
 
-	"github.com/purujawa/puru-ai/internal/ai"
-	"github.com/purujawa/puru-ai/internal/firebase"
-	"github.com/purujawa/puru-ai/internal/history"
-	"github.com/purujawa/puru-ai/internal/messages"
-	"github.com/purujawa/puru-ai/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/history"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
 )
 
 // processMessage handles a user message end-to-end.

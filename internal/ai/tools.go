@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/purujawa/puru-ai/internal/jsrun"
+	"github.com/purujawa06-bot/PURU-AI/internal/jsrun"
 )
 
 const (

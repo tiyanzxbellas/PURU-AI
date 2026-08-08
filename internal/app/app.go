@@ -9,14 +9,14 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/purujawa/puru-ai/internal/ai"
-	"github.com/purujawa/puru-ai/internal/config"
-	"github.com/purujawa/puru-ai/internal/history"
-	"github.com/purujawa/puru-ai/internal/memory"
-	"github.com/purujawa/puru-ai/internal/messages"
-	"github.com/purujawa/puru-ai/internal/skills"
-	"github.com/purujawa/puru-ai/internal/telegram"
-	"github.com/purujawa/puru-ai/internal/vfs"
+	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/purujawa06-bot/PURU-AI/internal/config"
+	"github.com/purujawa06-bot/PURU-AI/internal/history"
+	"github.com/purujawa06-bot/PURU-AI/internal/memory"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/skills"
+	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
 const (

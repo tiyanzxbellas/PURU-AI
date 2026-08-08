@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/purujawa/puru-ai/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 )
 
 type VFS struct {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/tiktoken-go/tokenizer"
 
-	"github.com/purujawa/puru-ai/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 )
 
 var (

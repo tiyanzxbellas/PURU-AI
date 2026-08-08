@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/purujawa/puru-ai/internal/firebase"
-	"github.com/purujawa/puru-ai/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 )
 
 type Store struct {

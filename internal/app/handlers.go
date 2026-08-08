@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/purujawa/puru-ai/internal/messages"
-	"github.com/purujawa/puru-ai/internal/telegram"
-	"github.com/purujawa/puru-ai/internal/tokens"
+	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/tokens"
 )
 
 const menuText = "*PURU-AI*\n\n" +

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/purujawa/puru-ai/internal/vfs"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
 type SkillMetadata struct {
