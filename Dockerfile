@@ -1,22 +1,23 @@
-FROM node:22-alpine AS build
+# Build stage
+FROM golang:1.26-alpine AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json tsconfig.json ./
-RUN npm ci
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY src/ ./src/
-RUN npm run build
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /app/puru-ai .
 
-FROM node:22-alpine
+# Runtime stage
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
+COPY --from=build /app/puru-ai .
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
-COPY --from=build /app/dist/ ./dist/
-
+ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+CMD ["/app/puru-ai"]

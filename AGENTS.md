@@ -1,64 +1,71 @@
 # AGENTS.md
 
 ## Mulai Cepat
-- `npm run dev` — nodemon + tsx (hot reload)
-- `npm start` — tsx
-- `npm run build` — tsc
-- `npm run build:bundle` — esbuild single-file bundle
-- `npm run typecheck` — tsc --noEmit
-- Tidak ada test, lint, atau formatter
+- `go run .` — jalankan bot lokal (load `.env` via godotenv)
+- `go build -o dist/puru-ai .` — kompilasi binary
+- `go vet ./...` — static analysis
+- `go test ./...` — unit test (jsrun, messages, prompt, settings)
+- `gofmt -l .` — cek format
 
 ## Konfigurasi & Secrets
-- Konfigurasi menggunakan environment variables, divalidasi saat startup di `src/config.ts`.
-- File `.env` di root repo menyimpan secrets.
-- Firebase RTDB base URL dimuat dari environment variable `PUBLIC_RTDB`.
+- Konfigurasi memakai environment variables, divalidasi saat startup di `internal/config/config.go`.
+- File `.env` di root repo hold secrets.
+- Firebase RTDB base URL dimuat dari `PUBLIC_RTDB`.
 - Konfigurasi opsional (dengan default):
-  - `HOSTNAME` — Alamat bind server (default: `localhost`)
-  - `PORT` — Port server (default: `3000`)
-  - `TEMPERATURE` — Temperature model AI (default: `0`)
-  - `MAX_LOOP` — Iterasi maksimal agent per request (default: `20`)
-  - `HISTORY_CACHE_MAX` — User maksimal di LRU cache (default: `500`)
-  - `HISTORY_CACHE_TTL` — TTL cache dalam ms (default: `600000` / 10 menit)
-  - `MEMORY_UPDATE_EVERY` — Interval pesan user untuk auto-update MEMORY.md (default: `3`)
-  - `MEMORY_MAX_CHARS` — Cap konten MEMORY.md saat di-inject ke system prompt (default: `8000`)
+  - `HOSTNAME` — alamat bind health server (default: `localhost`)
+  - `PORT` — port health server (default: `3000`)
+  - `TEMPERATURE` — temperature model AI (default: `0`)
+  - `MAX_LOOP` — iterasi maksimal agent per request (default: `20`)
+  - `HISTORY_CACHE_MAX` — user maksimal di LRU cache (default: `500`)
+  - `HISTORY_CACHE_TTL` — TTL cache dalam ms (default: `600000`)
+  - `MEMORY_UPDATE_EVERY` — interval pesan user untuk auto-update MEMORY.md (default: `3`)
+  - `MEMORY_MAX_CHARS` — cap konten MEMORY.md saat di-inject (default: `8000`)
+  - `E2B_TEMPLATE` — template sandbox E2B untuk eksekusi kode (default: `code-interpreter-v1`; template `default` lama sudah dihapus dari platform E2B → HTTP 404). Dibaca via `getEnv` di `internal/e2b`, bukan `config.go`.
 
-## Arsitektur
-- `src/index.ts` — entrypoint, memulai health server lalu bot dalam conflict-retry loop (exit setelah 5x conflict berturut-turut)
-- `src/bot.ts` — Setup grammY Bot, commands (`/start`, `/menu`, `/clear`, `/token`, `/info`, `/reset`, `/ai`, `/skills`), message handlers
-- `src/agent.ts` — `ToolLoopAgent` (Vercel AI SDK) dengan 22 tools; `toolChoice` default `'auto'` (model bebas panggil tool), `stopWhen` = `hasToolCall('finish')` + `isStepCount(maxLoop)`; `temperature` dan `maxLoop` bisa dikonfigurasi
-- `src/vfs.ts` — Virtual file system per-user disimpan di Firebase Realtime Database
-- `src/history.ts` — Persistensi chat history (LRU cache + Firebase RTDB)
-- `src/e2b.ts` — E2B sandbox (satu per chat, timeout 5 menit, auto-killed saat idle)
-- `src/skills-loader.ts` — Parsing metadata skill, listing, loading dari VFS
-- `src/skills-registry.ts` — Instalasi skill dari GitHub dan pencarian. Otomatis mendeteksi root direktori SKILL.md untuk menghindari nesting path yang salah.
-- `src/memory.ts` — Auto-update `/memory/MEMORY.md` via pemanggilan `streamText` internal (model sama) ketika counter user mencapai kelipatan `MEMORY_UPDATE_EVERY`. Output MEMORY.md minimal: maksimal 10 poin bernomor (1-10), data lama boleh diganti. Memakai `streamText` (bukan `generateText`) karena proxy AI bisa membalas format SSE bahkan untuk request non-streaming.
-- `src/server.ts` — HTTP health check di port 3000
-- `src/instruction.ts` — System prompt agent dibangun dengan `ChatPromptTemplate` (`@langchain/core/prompts`). Variabel template: `{memory}`, `{skills}`. Kurung kurawal literal di teks prompt WAJIB di-escape sebagai `{{...}}` (contoh: `/skills/{{name}}/SKILL.md`) agar tidak dianggap variabel — kalau tidak, muncul error `INVALID_PROMPT_INPUT: Missing value for input variable ...`
+## Arsitektur (Go, module `github.com/purujawa06-bot/PURU-AI`)
+- `main.go` — entrypoint: config → health server → `getMe` → `deleteWebhook(drop_pending)` → konflict-retry loop (exit setelah 5 conflict berurut).
+- `internal/config` — config loader.
+- `internal/telegram` — klien Telegram Bot API **ditulis manual** (poling `getUpdates` synchronous, `sendMessage`, `editMessageText`, `sendDocument/Audio/Video`, `getFile`+download). Sebab utama ditulis sendiri: bot memproses update **sekali-sekali secara beruntun** (satu goroutine) seperti `bot.start()` di grammY, dan deteksi conflict (409) harus presisi.
+- `internal/app` — handler bot: dispatcher command + busy-guard per-user (paralel antar-user), pipeline pesan (prune→cap→sanitize→token→memory), safe reply/edit/send, upload dokumen (maks 10MB).
+- `internal/ai` — klien chat/completions (SSE-tolerant) + `ToolLoop` port dari ToolLoopAgent + 22 tools + prosesMessage (retry + guard tegur).
+- `internal/messages` — model pesan `ModelMessage` kompatibel dengan schema Vercel AI SDK (round-trip field tak dikenal dipertahankan) + port `pruneMessages`/`EnsureStartsWithUser`/`CapUserTurns`/`Sanitize`.
+- `internal/firebase` — helper REST ing RTDB (GET/PUT/DELETE `.json` + base64url path).
+- `internal/settings` — config API per-user (base URL/key/model) di RTDB `settings/{chatID}` (partial override; field kosong = inherit global) + cache TTL in-memory. `Effective(global, user)` menggabungkan override.
+- `internal/vfs` — virtual file system per-user di RTDB.
+- `internal/history` — persistensi history (LRU+TTL + RTDB; hasil copy bukan mutasi cache).
+- `internal/tokens` — wrapper tiktoken-go (`o200k_base`).
+- `internal/skills` — parsing SKILL.md (frontmatter) + registry GitHub (search/tree/install/migrate).
+- `internal/prompt` — system prompt `text/template`. Literal braces seperti `/skills/{{name}}/SKILL.md` WAJIB di-escape (`{{"{{"}}` / `{{"}}"}}`), analog larvae AGENTS lama.
+- `internal/memory` — auto-update `/memory/MEMORY.md` via `chat/completions` internal (SSE-tolerant seperti streamText).
+- `internal/jsrun` — runtime goja untuk `crawl` (shim cheerio di atas goquery) + `calculate_math` (Math.*/alias).
+- `internal/e2b` — client E2B murni HTTP (port wire `@e2b/code-interpreter`): create/kcreate `POST https://api.<domain>/sandboxes` (X-API-KEY), runCode `POST ...:49999/execute` (NDJSON), files `GET/POST ...:49983/files`. Template default `code-interpreter-v1` (dari env `E2B_TEMPLATE`).
+- `internal/health` — HTTP health check.
 
-## Perilaku Penting
-- **Retry**: API call retry hingga 4 kali dengan exponential backoff (1s→2s→4s→8s, cap 30s). Error 4xx selain 408/429 (mis. invalid key) TIDAK di-retry — langsung berhenti. Web search retry 5 kali (1s→16s).
-- **Timeout agent** (`agent.ts`): `ToolLoopAgent` dikonfigurasi `timeout: { totalMs: 300000, stepMs: 120000, toolMs: 120000 }` — SDK abort beneran (bukan `Promise.race` yang bocor). `withTimeout` tetap ada sebagai jaring pengaman.
-- **Batas data** (`agent.ts`, `bot.ts`): `crawl` baca body max 1.5MB & hasil max 20k char; `read_file` max 30k char; upload dokumen max 10MB; konten tiap message history di-truncate max 8k char (`sanitizeHistoryMessages`) sebelum disimpan. Bertujuan menjaga RAM peak tetap rendah di mesin 512MB.
-- **Persistensi history** (`history.ts`): Chat history disimpan di Firebase RTDB dengan LRU cache (maks 500 user, TTL 10 menit). Cache miss load dari Firebase; write bersifat synchronous (await). Array kosong tidak di-cache. `getHistory` return **copy** array (cache tidak termutasi oleh pemanggil).
-- **Batas history** (`bot.ts`): Sebelum dikirim ke AI, history hanya di-prune (hapus reasoning lama & tool-call lama via `pruneMessages`) lalu dibatasi maksimal 5 pesan user (`capUserTurns`). Turn user terlama dihapus beserta jawaban assistant & tool-call-nya, urutan sisanya dipertahankan.
-- **Conflict loop** (`index.ts`): conflict beruntun ≥5x (tanda ada instance lain dengan token sama) → `process.exit(1)` agar platform restart bersih, bukan spin selamanya.
-- **Pemrosesan sekuensial**: Bot menggunakan `bot.start()` (bukan `bot.run()`) — update diproses satu per satu, menjaga RAM peak tetap rendah di mesin 512MB.
-- **Anti-halusinasi & protocol guard** (`agent.ts`, `instruction.ts`): System prompt melarang klaim tanpa tool call (rule: jangan klaim aksi selesai kecuali tool mengembalikan sukses), melarang teks pengumuman/filler, dan mewajibkan jawaban sesingkat mungkin (1-3 kalimat). Di `processMessage`, setelah stream selesai: jika last step **teks-tanpa-tool & tanpa `finish`** (loop berhenti natural karena `finishReason != 'tool-calls'`), AI **ditegur** lalu di-`agent.stream` ulang sekali (`MAX_CORRECTION_ROUNDS = 1`) dengan teguran sebagai user message berisi direktif netral ber-tag `[system]...[/system]` yang menyuruh melanjutkan pekerjaan dan menyelesaikannya via tool `finish`; `responseMessages` kedua run digabung dan token dijumlah. Kalau ronde koreksi habis masih text-only, hasilnya diterima apa adanya (hindari loop tak berujung). `stopWhen` (`hasToolCall('finish')` + `isStepCount(maxLoop)`) cuma menambah kondisi stop — tidak bisa mencegah stop natural teks-tanpa-tool, karena itu guard ditaruh di caller.
-- **Memory user**: hanya `/memory/MEMORY.md` (konteks percakapan & info user) yang di-inject ke system prompt di setiap request (dipotong max `MEMORY_MAX_CHARS`). `/memory/USER.md` dan `/memory/SOUL.md` sudah **dihapus** — tidak lagi dibaca (file lama di Firebase diabaikan). MEMORY.md **dikelola otomatis oleh sistem** — AI DILARANG membaca/menulisnya sendiri; `updateMemory` dipicu setiap `MEMORY_UPDATE_EVERY` pesan user (counter `history/{id}/meta`) SETELAH reply terkirim, error tidak menggagalkan alur chat.
-- **Safe reply/edit** (`bot.ts:36-78`): Error parsing Markdown ditangkap dan retry tanpa `parse_mode`.
-- **E2B sandbox**: create → tulis kode ke VFS → `e2b_run_code` membaca dari VFS. Satu sandbox per chat, kill setelah 5 menit idle.
-- **SoundCloud / web search** via `puruboy-api.vercel.app`.
-- **Math**: `Function()` constructor eval.
+## Perilaku Penting (dipertahankan dari generasi sebelumnya)
+- **Retry**: API call retry hingga 4 kali dengan exponential backoff (1s→2s→4s→8s, cap 30s). Error 4xx selain 408/429 TIDAK di-retry (`isNonRetryableError`). Web search retry 5 kali (1s→16s, cap 30s).
+- **Timeout agent** (`agent.go`): per-step 120s, per-tool 120s, total 300s via `context.WithTimeout`; model dipanggil streaming (SSE) tapi hasil dirangkai penuh. **Context step WAJIB tetap hidup sampai semua tool selesai dieksekusi** — `cancel()` hanya dipanggil setelah loop tool, saat break tanpa tool call, atau saat error Chat (regresi lama: `cancel()` prematur setelah Chat membuat semua tool HTTP gagal `context canceled`; dijaga oleh `internal/ai/agent_test.go`).
+- **Batas data**: crawl baca body max 1.5MB & hasil max 20k char (tool), `read_file` max 30 ribu char; upload dokumen max 10MB; isi history di-truncate max 8k char/message (`messages.Sanitize`).
+- **Persistensi history**: path `history/{chat}/messages|tokens|meta` di RTDB, LRU+TTL di dalam proses (hasil getHistory berupa copy; array kosong tidak di-cache). JSON schema = `ModelMessage` Vercel AI SDK v7 → data user lama tetap terbaca & round-trip field tidak hilang.
+- **Batas history**: sebelum dikirim ke model, history di-prune (`reasoning: before-last-message`, `toolCalls: before-last-6-messages`, kosong dihapus) lalu di-cap maksimal 5 pesan user (`messages.CapUserTurns`).
+- **Conflict loop** (`main.go`): conflict beruntun ≥5 → `os.Exit(1)` agar platform restart bersih.
+- **Pemrosesan paralel per-user** (`internal/app/app.go`): `Handle` hanya dispatcher — setiap update text/document dijalankan di goroutine sendiri sehingga semua user diproses bersamaan tanpa antrian. User yang sama dikunci via `busy sync.Map` (`tryAcquire`/`release`): update kedua saat request masih berjalan langsung dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...` (tidak di-queue). Konsistensi per-user (history/LRU/e2b) aman karena dua request user yang sama tidak pernah bersamaan; `main.go` hanya memajukan offset, error async hanya di-log.
+- **Anti-halusinasi & protocol guard** (`internal/ai/agent.go`): system prompt melarang klaim tanpa tool call & filler; `runOnce` berhenti saat tool `finish` dipanggil atau jumlah step = `MAX_LOOP`. Di `ProcessMessage`: bila result ronde tanpa tool/finish (stop natural teks-polos), AI **ditegur** dengan direktif ber-tag `[system]` lalu dijalankan ulang sekali (`maxCorrection = 1`). **Hanya ronde yang menyelesaikan turn yang dipersist ke `responseMessages`/history** — stub text-only kosong (`"\n"`, echo pesan user) dari ronde yang ditegur tidak ikut tersimpan (regresi polusi history dijaga `internal/ai/agent_test.go`); `messages.SanitizeHistoryMessages` juga membuang text part kosong/whitespace & pesan assistant kosong tanpa tool-call; `makeResult` fallback ke pesan error bila teks kosong. Di `internal/prompt`: Rule 9 — bila pesan user ambigu/pendek/gibberish, AI dilarang menebak dengan tool dan wajib tanya klarifikasi via `finish` di step yang sama (dijaga assertion `prompt_test.go`).
+- **Elusive memory**: auto-update `/memory/MEMORY.md` setelah `MEMORY_UPDATE_EVERY` pesan user (counter `history/{id}/meta`), error non-fatal. MEMORY.md dikelola sistem, AI dilarang baca/tulis sendiri.
+- **Safe reply/edit**: fallback parse-mode Markdown bila Telegram menolak entitas parse; respon >4096 char dikirim sebagai file.
+- **Jawaban final pesan baru**: jawaban AI dikirim sebagai **pesan baru** (reply ke pesan user) via `safeSend`, bukan edit — placeholder "🤔 sedang berpikir..."/pesan "Tersimpan di /path..." dihapus via `deleteMessage` setelah jawaban terkirim (`internal/app/generate.go`). Command skills (search/install/migrate) tetap pakai `sendThinking` + `safeEdit`.
+- **Per-user API config**: `/config` (api/model/base/clear/test) dipakai user untuk memakai API sendiri; partial override global via `settings.Effective`. Resolver `ClientFor(ctx, chatID)` membuat `ai.Client` fresh per request (pakai http.Client global) ⇒ aman paralel. Memory update juga ikut API user. Path `settings/{chatID}` di RTDB terpisah dari `fs/` & `history/` sehingga `/reset chat` tidak menghapus config.
+- **/reset terpisah**: `/reset` polos = help; `/reset config` hapus settings user; `/reset memory` hapus MEMORY.md + reset counter `meta.userTurns`; `/reset chat` = `DeleteHistory` + `vfs.DeleteAll` (perilaku /reset lama).
+- **E2B**: satu sandbox per chat, TTL 5 menit idle, auto-kill; `runCode` hasil NDJSON `{type: stdout/stderr/result/error}`.
+- **Math & crawl**: evaluasi lewat goja. `calculate_math` menyediakan alias Math (`sqrt`, `pow`, ...). `crawl` mengharapkan snippet cheerio JavaScript (shim compat: `text`, `html`, `attr`, `val`, `length`, `first`, `last`, `eq`, `find`, `parent`, `parents`, `children`, `filter`, `each`, `map`, `get`, `toArray`, passthrough `$(el)`).
 
 ## Konvensi
-- Semua import source menggunakan ekstensi `.js` (ESM).
-- `"type": "module"` di package.json.
-- System prompt (instruksi) agent berbahasa Inggris dan ringkas; respons ke user dalam Bahasa Indonesia dan singkat.
-- `src/tools.ts` mengekspor type union `ToolNames` — update saat menambah tools.
-- **Setiap perubahan codebase WAJIB diikuti update `AGENTS.md` dan `README.md`** agar informasi (arsitektur, perilaku, command, config) selalu relevan.
+- Go toolchain 1.26+; format `gofmt`; tidak ada linter wajib selain `go vet`.
+- Import internal memakai module path `github.com/purujawa06-bot/PURU-AI/internal/...`.
+- Response ke user dalam Bahasa Indonesia & singkat; system prompt bahasa Inggris.
+- **Setiap perubahan codebase WAJIB di-update `AGENTS.md` dan `README.md`.**
 
 ## Git & Tagging
-- Setiap commit WAJIB diikuti dengan pembuatan **annotated tag** (`git tag -a`).
-- Format tag: `v<major>.<minor>.<patch>` — increment sesuai semver (patch untuk fix, minor untuk fitur, major untuk breaking change).
-- Pesan tag harus berisi **penjelasan detail** tentang perubahan yang dilakukan (bukan cuma judul commit).
-- Setelah commit dan tag dibuat, push semuanya: `git push origin main --follow-tags`.
+- Setiap commit WAJIB diikuti annotated tag (`git tag -a`).
+- Format tag `v<major>.<minor>.<patch>` — semver (patch fix, minor fitur, major breaking).
+- Pesan tag harus berisi penjelasan detail perubahan.
+- Sesudah commit & tag: `git push origin main --follow-tags`.
