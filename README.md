@@ -1,27 +1,27 @@
 # PURU-AI Telegram Bot
 
-Bot Telegram AI berbahasa Go dengan agent loop (tool-calling), virtual file system berbasis Firebase, memory user, AI tools, dan chat history per-user.
+Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`github.com/tmc/langchaingo`), virtual file system berbasis Firebase, memory user, AI tools, dan chat history per-user.
 
 ## Fitur
 
-- **AI Chat** — agent tool-loop port dari `ToolLoopAgent` (Vercel AI SDK) yang memanggil model streaming (SSE) dan menjalankan 22 tools
+- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + `llms/openai`) yang memanggil model secara streaming (SSE) dan menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib)
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools
-- **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via pemanggilan AI internal (maks 10 poin bernomor)
-- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call; jika last step AI tidak memanggil tool maupun `finish`, AI ditegur dengan direktif `[system]` lalu dijalankan ulang sekali. Hanya round yang menyelesaikan turn yang dipersist ke history — stub text-only kosong dari round yang ditegur tidak mencemari konteks. Pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi (via `finish`) tanpa menebak dengan tool
+- **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via model langchaingo streaming dan dijaga minimal: maks 5 poin penting + baris topik yang sedang dibahas, info usang/irrelevan dibuang
+- **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call & filler; jawaban final = teks stop natural executor (tanpa tool `finish`/scold); bila AI berhenti tanpa menghasilkan teks, output tidak dipersist ke history dan request dicoba ulang; pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi langsung tanpa tool; `arguments` tool call dinormalisasi jadi JSON objek valid dan tool-call `id` yang dikosongkan provider (mis. gateway Gemini) di-generate deterministik (`call_<n>`) sehingga tool result selalu berpasangan 1:1 dengan tool call-nya (mencegah `400 function response parts ≠ function call parts`)
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
 - **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`, template default `code-interpreter-v1`)
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
 - **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery); request memakai User-Agent browser agar situs yang memblokir client non-browser (mis. Wikipedia HTTP 403 untuk `Go-http-client/1.1`) tetap bisa di-crawl; snippet boleh berbentuk ekspresi (`$("h1").text()`) maupun statement `return {...};` (dinormalisasi otomatis)
 - **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
-- **Group Chat** — gunakan `/ai <pesan>` di grup
-- **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti
-- **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-step & per-tool 2 menit; context step tetap hidup sampai semua tool selesai (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
+- **Group Chat** — gunakan `/ai <pesan>` di grup; semua command juga bisa memakai suffix `@username_bot` (mis. `/menu@nama_bot`)
+- **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Kegagalan balasan AI (toolset build, model tidak tersedia, respon kosong) selalu ditulis ke log dengan prefix `[ai]` (per-attempt + `finish_reason` + alasan akhir) supaya fallback "Maaf, saya tidak bisa merespons saat ini." mudah ditelusuri penyebabnya
+- **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-tool 2 menit; loop & context tool dijaga langchaingo executor (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse; semua teks keluar di-sanitasi jadi valid UTF-8 (`strings.ToValidUTF8`) agar tidak kena `400 text must be encoded in UTF-8`
 - **Per-user API Config** — user bisa memakai API sendiri (`/config api|model|base`) disimpan di Firebase RTDB, partial override atas default server; resolusi client per request sehingga aman paralel
 - **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
 
 > ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
-- **Paralel antar-user** — semua user diproses bersamaan (tanpa antrian); jika user yang sama mengirim pesan saat request masih berjalan, dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...`
+- **Paralel antar-user** — semua user diproses bersamaan (tanpa antrian); jika user yang sama mengirim pesan AI saat request masih berjalan, dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...` (command non-AI seperti `/menu`, `/token`, `/config` tetap langsung dieksekusi tanpa diblok)
 - **Jawaban final sebagai pesan baru** — hasil AI dikirim sebagai pesan baru (bukan edit), placeholder "🤔 sedang berpikir..." dihapus setelah jawaban terkirim
 
 ## Commands
@@ -62,7 +62,7 @@ internal/
 ├── config/             — config loader & validasi env
 ├── telegram/           — klien Bot API (long-poll synchronous, send/edit/upload, download)
 ├── app/                — dispatcher command, busy-guard per-user, pipeline pesan, safe reply/send
-├── ai/                 — client chat/completions + agent (22 tool) + processMessage (retry & guard)
+├── ai/                 — agent langchaingo (executor + ChatPromptTemplate + custom agents.Agent) + 21 tools + processMessage (retry & normalisasi arguments)
 ├── messages/           — ModelMessage (kompatibel Vercel AI SDK v7), pruneMessages port
 ├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url)
 ├── vfs/                — virtual file system per-user
@@ -71,7 +71,7 @@ internal/
 ├── tokens/             — tiktoken-go (o200k_base)
 ├── skills/             — loader/manifest SKILL.md + registry GitHub
 ├── prompt/             — system prompt (text/template, braces di-escape)
-├── memory/             — auto-update MEMORY.md (chat completions SSE-tolerant)
+├── memory/             — auto-update MEMORY.md (model langchaingo streaming SSE-tolerant)
 ├── jsrun/              — goja: cheerio shim + evaluate math
 ├── e2b/                — client E2B murni HTTP (sandbox/execute/files)
 └── health/             — HTTP health check
@@ -79,11 +79,14 @@ internal/
 
 ## Tools yang Tersedia untuk AI
 
-list_directory, read_file, write_file, edit_file, delete_file, move_file, send_file, search_web, crawl, get_current_time, calculate_math, e2b_sandbox_create, e2b_run_code, e2b_install_package, e2b_send_file, e2b_sandbox_kill, create_skill, use_skills, delete_skill, search_skills, install_skill, finish.
+list_directory, read_file, write_file, edit_file, delete_file, move_file, send_file, search_web, crawl, get_current_time, calculate_math, e2b_sandbox_create, e2b_run_code, e2b_install_package, e2b_send_file, e2b_sandbox_kill, create_skill, use_skills, delete_skill, search_skills, install_skill.
+
+Skema tools memakai JSON-Schema yang valid untuk provider ketat: `required` selalu array saat ada dan dihilangkan bila kosong (dijamin unit test).
 
 ## Tech Stack
 
 - Go 1.26
+- [langchaingo](https://github.com/tmc/langchaingo) — agent loop (`agents.Executor`) + OpenAI-compatible model (`llms/openai`)
 - [goja](https://github.com/dop251/goja) — runtime JS untuk kode cheerio & evaluasi math
 - [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing untuk crawl
 - [tiktoken-go](https://github.com/tiktoken-go/tokenizer) — tokenizer `o200k_base`

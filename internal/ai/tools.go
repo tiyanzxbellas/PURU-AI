@@ -34,7 +34,7 @@ func BuildTools(a *Agent, opts *ProcessOptions) map[string]*Tool {
 		"move_file", "send_file", "search_web", "crawl", "get_current_time",
 		"calculate_math", "e2b_sandbox_create", "e2b_run_code", "e2b_install_package",
 		"e2b_send_file", "e2b_sandbox_kill", "create_skill", "use_skills",
-		"delete_skill", "search_skills", "install_skill", "finish",
+		"delete_skill", "search_skills", "install_skill",
 	}
 	m := make(map[string]*Tool, len(names))
 	for _, n := range names {
@@ -364,10 +364,6 @@ var toolRunners = map[string]func(ctx context.Context, e *toolEnv, a map[string]
 		res := e.agent.Registry.InstallFromGitHub(ctx, e.opts.ChatID, argStr(a, "url"))
 		return map[string]any{"success": res.Success, "error": res.Error, "name": res.Name, "path": res.Path}, nil
 	},
-
-	"finish": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
-		return map[string]any{"done": true, "message": argStr(a, "message")}, nil
-	},
 }
 
 func lastPathSegment(path, fallback string) string {
@@ -421,14 +417,17 @@ var toolDescriptions = map[string]string{
 	"delete_skill":        "Menghapus skill dari /skills/ virtual file system.",
 	"search_skills":       "Mencari skill dari GitHub berdasarkan kata kunci.",
 	"install_skill":       "Menginstall skill dari URL GitHub repository.",
-	"finish":              "Menandakan bahwa pekerjaan telah selesai dan mengembalikan jawaban final untuk user. WAJIB dipanggil di akhir setiap respons.",
 }
 
 var toolSchemas = map[string]map[string]any{}
 
 func init() {
 	obj := func(required []string, props map[string]any) map[string]any {
-		return map[string]any{"type": "object", "properties": props, "required": required}
+		schema := map[string]any{"type": "object", "properties": props}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		return schema
 	}
 	sp := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 
@@ -510,10 +509,7 @@ func init() {
 	toolSchemas["search_skills"] = obj([]string{"query"}, map[string]any{
 		"query": sp(`Kata kunci pencarian (contoh: "weather", "web scraping").`),
 	})
-	toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
+toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
 		"url": sp(`URL GitHub repository yang berisi skill (contoh: "https://github.com/user/repo" atau "user/repo").`),
-	})
-	toolSchemas["finish"] = obj([]string{"message"}, map[string]any{
-		"message": sp("Jawaban final yang akan ditampilkan kepada user."),
 	})
 }

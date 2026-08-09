@@ -5,7 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/tmc/langchaingo/llms"
+
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
@@ -21,11 +22,10 @@ const resetHelpText = "🗑️ *Reset Data*\n\n" +
 	"`/reset memory` — Hapus MEMORY.md (ingatan user)\n" +
 	"`/reset chat` — Hapus riwayat percakapan & file VFS"
 
-func (a *App) cmdReset(ctx context.Context, msg *telegram.Message) error {
-	rest := strings.TrimSpace(msg.Text[len("/reset"):])
+func (a *App) cmdReset(ctx context.Context, msg *telegram.Message, rest string) error {
 	args := []string{}
-	if rest != "" {
-		args = strings.Fields(rest)
+	if r := strings.TrimSpace(rest); r != "" {
+		args = strings.Fields(r)
 	}
 	if len(args) == 0 {
 		return a.safeReply(ctx, msg, resetHelpText, true)
@@ -62,16 +62,15 @@ const configHelpText = "⚙️ *Konfigurasi API Pribadi*\n\n" +
 	"`/config test` — Tes koneksi ke API yang dipakai\n\n" +
 	"__Data tersimpan per user di Firebase. Field yang kosong memakai default server.__"
 
-func (a *App) cmdConfig(ctx context.Context, msg *telegram.Message) error {
+func (a *App) cmdConfig(ctx context.Context, msg *telegram.Message, rest string) error {
 	userID := msg.From.ID
 	if a.Settings == nil {
 		return a.safeReply(ctx, msg, "Konfigurasi API pribadi tidak aktif.", true)
 	}
 
-	rest := strings.TrimSpace(msg.Text[len("/config"):])
 	args := []string{}
-	if rest != "" {
-		args = strings.Fields(rest)
+	if r := strings.TrimSpace(rest); r != "" {
+		args = strings.Fields(r)
 	}
 	if len(args) == 0 {
 		return a.safeReply(ctx, msg, a.configStatus(ctx, userID), true)
@@ -80,11 +79,11 @@ func (a *App) cmdConfig(ctx context.Context, msg *telegram.Message) error {
 	sub := strings.ToLower(args[0])
 	switch sub {
 	case "api", "key", "apikey":
-		return a.configSet(ctx, msg, 1, func(c *settings.Config, v string) { c.APIKey = &v })
+		return a.configSet(ctx, msg, args, 1, func(c *settings.Config, v string) { c.APIKey = &v })
 	case "model":
-		return a.configSet(ctx, msg, 1, func(c *settings.Config, v string) { c.Model = &v })
+		return a.configSet(ctx, msg, args, 1, func(c *settings.Config, v string) { c.Model = &v })
 	case "base", "baseurl", "base_url":
-		return a.configSet(ctx, msg, 1, func(c *settings.Config, v string) { c.BaseURL = &v })
+		return a.configSet(ctx, msg, args, 1, func(c *settings.Config, v string) { c.BaseURL = &v })
 	case "clear", "unset", "delete":
 		if len(args) >= 2 {
 			field := strings.ToLower(args[1])
@@ -99,8 +98,7 @@ func (a *App) cmdConfig(ctx context.Context, msg *telegram.Message) error {
 	return a.safeReply(ctx, msg, configHelpText, true)
 }
 
-func (a *App) configSet(ctx context.Context, msg *telegram.Message, valueIndex int, apply func(*settings.Config, string)) error {
-	args := strings.Fields(strings.TrimSpace(msg.Text[len("/config"):]))
+func (a *App) configSet(ctx context.Context, msg *telegram.Message, args []string, valueIndex int, apply func(*settings.Config, string)) error {
 	if len(args) <= valueIndex || strings.TrimSpace(args[valueIndex]) == "" {
 		return a.safeReply(ctx, msg, "❌ Nilai tidak lengkap.\n\n"+configHelpText, true)
 	}
@@ -169,12 +167,12 @@ func (a *App) configStatus(ctx context.Context, userID int64) string {
 	return status
 }
 
-// clientForUser returns the model client for a user (their own config when
-// set), falling back to the shared default client.
-func (a *App) clientForUser(ctx context.Context, userID int64) *ai.Client {
+// clientForUser returns the model for a user (their own config when set),
+// falling back to the shared default model.
+func (a *App) clientForUser(ctx context.Context, userID int64) llms.Model {
 	if a.agent != nil && a.agent.ClientFor != nil {
-		if c := a.agent.ClientFor(ctx, userID); c != nil {
-			return c
+		if m := a.agent.ClientFor(ctx, userID); m != nil {
+			return m
 		}
 	}
 	if a.agent != nil {
@@ -184,8 +182,8 @@ func (a *App) clientForUser(ctx context.Context, userID int64) *ai.Client {
 }
 
 func (a *App) configTest(ctx context.Context, msg *telegram.Message, userID int64) error {
-	client := a.clientForUser(ctx, userID)
-	if client == nil {
+	model := a.clientForUser(ctx, userID)
+	if model == nil {
 		return a.safeReply(ctx, msg, "Tidak dapat membuat klien AI.", true)
 	}
 	thID, err := a.sendThinking(ctx, msg, "🔌 Menghubungi API...")
@@ -194,9 +192,18 @@ func (a *App) configTest(ctx context.Context, msg *telegram.Message, userID int6
 	}
 	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	text, err := client.ChatSystem(tctx, "You are a connectivity check. Reply with exactly: OK", "ping", 10)
+	res, err := model.GenerateContent(tctx, []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "You are a connectivity check. Reply with exactly: OK"}},
+		},
+	}, llms.WithMaxTokens(10), llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
 	if err != nil {
 		return a.safeEdit(ctx, msg.Chat.ID, thID, "❌ *Gagal koneksi:*\n"+err.Error())
+	}
+	text := ""
+	if res != nil && len(res.Choices) > 0 {
+		text = res.Choices[0].Content
 	}
 	return a.safeEdit(ctx, msg.Chat.ID, thID, "✅ *Koneksi berhasil!* API merespons:\n\n"+text)
 }

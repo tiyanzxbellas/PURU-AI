@@ -32,21 +32,41 @@ const menuText = "*PURU-AI*\n\n" +
 
 const invalidCommandText = "❌ Perintah tidak dikenal. Gunakan /menu untuk melihat daftar perintah yang tersedia."
 
+// splitCommand splits a message into its leading command token — with any
+// "@bot" handle stripped ("/menu@my_bot" → "/menu") — and the rest of the
+// message. For non-command text the whole line is cmd and rest.
+func splitCommand(text string) (cmd, rest string) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	token := fields[0]
+	if i := strings.IndexByte(token, '@'); i > 0 {
+		token = token[:i]
+	}
+	return token, strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
+}
+
+// isCommandText reports whether text begins with a "/" command token. Used to
+// decide whether a message bypasses the per-user busy guard.
+func isCommandText(text string) bool {
+	cmd, _ := splitCommand(text)
+	return strings.HasPrefix(cmd, "/")
+}
+
 // ---------------------------------------------------------------------------
 // Text handler
 // ---------------------------------------------------------------------------
 
 func (a *App) handleText(ctx context.Context, msg *telegram.Message) error {
-	raw := msg.Text
-	if strings.HasPrefix(raw, "/ai") {
-		rest := strings.TrimSpace(raw[len("/ai"):])
+	cmd, rest := splitCommand(msg.Text)
+	if cmd == "/ai" {
 		if rest == "" {
 			return a.safeReply(ctx, msg, "Gunakan /ai diikuti pesan, contoh: /ai apa kabar?", true)
 		}
 		return a.processMessage(ctx, msg, rest)
 	}
-	if strings.HasPrefix(raw, "/") {
-		cmd := strings.Fields(raw)[0]
+	if strings.HasPrefix(cmd, "/") {
 		if isKnownCommand(cmd) {
 			return a.dispatchCommand(ctx, msg)
 		}
@@ -58,7 +78,7 @@ func (a *App) handleText(ctx context.Context, msg *telegram.Message) error {
 	if a.isGroup(msg) {
 		return nil
 	}
-	return a.processMessage(ctx, msg, raw)
+	return a.processMessage(ctx, msg, msg.Text)
 }
 
 func isKnownCommand(cmd string) bool {
@@ -75,7 +95,7 @@ func isKnownCommand(cmd string) bool {
 // ---------------------------------------------------------------------------
 
 func (a *App) dispatchCommand(ctx context.Context, msg *telegram.Message) error {
-	cmd := strings.Fields(msg.Text)[0]
+	cmd, rest := splitCommand(msg.Text)
 	switch cmd {
 	case "/start":
 		return a.safeReply(ctx, msg, startText, true)
@@ -85,15 +105,15 @@ func (a *App) dispatchCommand(ctx context.Context, msg *telegram.Message) error 
 		_ = a.hist.DeleteHistory(ctx, msg.From.ID)
 		return a.safeReply(ctx, msg, "Riwayat percakapan telah dihapus!", true)
 	case "/reset":
-		return a.cmdReset(ctx, msg)
+		return a.cmdReset(ctx, msg, rest)
 	case "/config":
-		return a.cmdConfig(ctx, msg)
+		return a.cmdConfig(ctx, msg, rest)
 	case "/token":
 		return a.cmdToken(ctx, msg)
 	case "/info":
-		return a.cmdInfo(ctx, msg)
+		return a.cmdInfo(ctx, msg, rest)
 	case "/skills":
-		return a.cmdSkills(ctx, msg)
+		return a.cmdSkills(ctx, msg, rest)
 	}
 	return nil
 }
@@ -133,9 +153,9 @@ func (a *App) cmdToken(ctx context.Context, msg *telegram.Message) error {
 	return a.safeReply(ctx, msg, reply, true)
 }
 
-func (a *App) cmdInfo(ctx context.Context, msg *telegram.Message) error {
+func (a *App) cmdInfo(ctx context.Context, msg *telegram.Message, rest string) error {
 	args := []string{}
-	if m := strings.TrimSpace(msg.Text[len("/info"):]); m != "" {
+	if m := strings.TrimSpace(rest); m != "" {
 		args = strings.Fields(m)
 	}
 	arg := ""
@@ -160,12 +180,11 @@ func (a *App) cmdInfo(ctx context.Context, msg *telegram.Message) error {
 	return a.safeReply(ctx, msg, fmt.Sprintf("📄 *MEMORY.md*\n\n%s", content), true)
 }
 
-func (a *App) cmdSkills(ctx context.Context, msg *telegram.Message) error {
+func (a *App) cmdSkills(ctx context.Context, msg *telegram.Message, rest string) error {
 	userID := msg.From.ID
-	rest := strings.TrimSpace(msg.Text[len("/skills"):])
 	args := []string{}
-	if rest != "" {
-		args = strings.Fields(rest)
+	if r := strings.TrimSpace(rest); r != "" {
+		args = strings.Fields(r)
 	}
 	if len(args) == 0 {
 		list := a.catalog.ListSkills(ctx, userID)

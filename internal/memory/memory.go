@@ -1,45 +1,50 @@
-// Package memory auto-updates /memory/MEMORY.md via an internal model call
-// (streamText > chat completions with SSE tolerance). It follows the old
-// src/memory.ts behaviour: max 10 numbered points, old data freely replaceable.
+// Package memory auto-updates /memory/MEMORY.md via an internal model call.
+// The memory stays minimal: max 5 numbered important points plus a short
+// "current topic" section; obsolete/irrelevant entries are dropped. The model
+// is langchaingo's OpenAI-compatible client (streaming, SSE-tolerant).
 package memory
 
 import (
 	"context"
 	"strings"
 
-	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/tmc/langchaingo/llms"
+
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
-const memoryMaxOutput = 2000
+const memoryMaxOutput = 1500
 
 const memoryPrompt = `You are the memory manager for AI assistant "PURU-AI".
 
 Read the old MEMORY.md and the recent conversation, then write a new MEMORY.md:
-- Keep only important facts: user info, decisions, ongoing tasks, preferences, unfinished threads.
-- Max 10 numbered points (1-10). Short and clear. Keep 0 to 9 points, the rest can be replaced with new data or removed.
-- Output ONLY the MEMORY.md content (markdown, max 2000 chars), no title or preamble.`
+- Keep ONLY the most important facts: user info, decisions, preferences, ongoing tasks, unfinished threads.
+- Max 5 numbered points (1-5), short and clear. Remove everything outdated or irrelevant.
+- End with a short "Topik sedang dibahas:" line describing what is currently being discussed (write "—" when nothing is).
+- Output ONLY the MEMORY.md content (markdown, max 1500 chars), no title or preamble.`
+
+func noopStream(context.Context, []byte) error { return nil }
 
 type Manager struct {
-	client *ai.Client
-	vfs    *vfs.VFS
-	// ClientFor resolves the model client per chat so users with their own API
-	// settings get memory updates through their key too. Nil uses client.
-	ClientFor func(ctx context.Context, chatID int64) *ai.Client
+	model llms.Model
+	vfs   *vfs.VFS
+	// ClientFor resolves the model per chat so users with their own API
+	// settings get memory updates through their key too. Nil uses model.
+	ClientFor func(ctx context.Context, chatID int64) llms.Model
 }
 
-func New(client *ai.Client, v *vfs.VFS) *Manager {
-	return &Manager{client: client, vfs: v}
+func New(model llms.Model, v *vfs.VFS) *Manager {
+	return &Manager{model: model, vfs: v}
 }
 
-func (m *Manager) clientFor(ctx context.Context, chatID int64) *ai.Client {
+func (m *Manager) modelFor(ctx context.Context, chatID int64) llms.Model {
 	if m.ClientFor != nil {
-		if c := m.ClientFor(ctx, chatID); c != nil {
-			return c
+		if mo := m.ClientFor(ctx, chatID); mo != nil {
+			return mo
 		}
 	}
-	return m.client
+	return m.model
 }
 
 func messageToText(m *messages.Message) string {
@@ -89,11 +94,24 @@ func (m *Manager) UpdateMemory(ctx context.Context, chatID int64, recent []*mess
 		historyText = "(tidak ada)"
 	}
 
-	text, err := m.clientFor(ctx, chatID).ChatSystem(ctx, memoryPrompt,
-		"memory/MEMORY.md lama:\n"+current+"\n\nPercakapan terakhir:\n"+historyText,
-		memoryMaxOutput)
+	res, err := m.modelFor(ctx, chatID).GenerateContent(ctx, []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextContent{Text: memoryPrompt}},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{
+				Text: "memory/MEMORY.md lama:\n" + current + "\n\nPercakapan terakhir:\n" + historyText,
+			}},
+		},
+	}, llms.WithMaxTokens(memoryMaxOutput), llms.WithStreamingFunc(noopStream))
 	if err != nil {
 		return "", err
+	}
+	text := ""
+	if res != nil && len(res.Choices) > 0 {
+		text = res.Choices[0].Content
 	}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {

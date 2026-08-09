@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,32 +16,67 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
-// TestRunOnceToolContext runs runOnce against a fake chat endpoint and
-// verifies the tool executes with a live (non-canceled) context. Regressions:
-// tools used to run with an already-canceled stepCtx, failing every HTTP
-// request with "context canceled".
-func TestRunOnceToolContext(t *testing.T) {
-	const toolCallChunk = `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"test_tool","arguments":"{}"}}]},"finish_reason":null}]}`
-	const plainChunk = `{"choices":[{"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
-
+// fakeChatServer streams SSE chat completions. The chunk for a given call is
+// picked by onCall(chunkIdx). Every HTTP request body is handed to checkBody
+// (when non-nil) so a test can validate the outgoing wire format.
+func fakeChatServer(t *testing.T, chunks []string, checkBody func(t *testing.T, body map[string]any)) *httptest.Server {
+	t.Helper()
 	var calls int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if checkBody != nil {
+			checkBody(t, body)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		calls++
-		chunk := toolCallChunk
-		if calls > 1 {
-			chunk = plainChunk
+		idx := calls - 1
+		if idx >= len(chunks) {
+			idx = len(chunks) - 1
 		}
+		chunk := chunks[idx]
 		io.WriteString(w, "data: "+chunk+"\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
+}
+
+func toolCallChunk(name, args string) string {
+	// sha/api deltas streamed in one chunk
+	return `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+}
+
+func toolCallChunkNoID(name, args string) string {
+	// Some OpenAI-compatible gateways (Gemini-family) omit the tool-call id in
+	// the streamed delta. The agent must mint one so the tool-result pairs up.
+	return `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+}
+
+func textChunk(text string) string {
+	return `{"choices":[{"delta":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}`
+}
+
+// TestRunOnceToolContext runs runOnce (langchaingo executor) against a fake
+// chat endpoint and verifies the tool executes with a live (non-canceled)
+// context. Regression: in the old manual loop a prematurely canceled stepCtx
+// made every tool HTTP request fail with "context canceled".
+func TestRunOnceToolContext(t *testing.T) {
+	srv := fakeChatServer(t, []string{
+		toolCallChunk("test_tool", `{}`),
+		textChunk("ok"),
+	}, nil)
 	defer srv.Close()
 
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
 	agent := &Agent{
-		Client: &Client{BaseURL: srv.URL, APIKey: "test", Model: "test", HTTP: srv.Client()},
+		Client: model,
 		Config: &config.Config{MaxLoop: 5},
 	}
 
@@ -57,7 +93,7 @@ func TestRunOnceToolContext(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), []*messages.Message{textMsg("user", "halo")}, nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -67,65 +103,242 @@ func TestRunOnceToolContext(t *testing.T) {
 	if toolCtxErr != nil {
 		t.Fatalf("tool ran with canceled context: %v", toolCtxErr)
 	}
-	if res.text != "ok" {
-		t.Fatalf("unexpected final text: %q", res.text)
+	if res.finalText != "ok" {
+		t.Fatalf("unexpected final text: %q", res.finalText)
 	}
 }
 
-// TestProcessMessageDropsStubRound verifies that a text-only round which
-// triggers the scold correction is NOT persisted into ProcessResult's
-// ResponseMessages (the empty "\n" stub used to leak into stored history and
-// degrade later turns).
-func TestProcessMessageDropsStubRound(t *testing.T) {
-	const stubChunk = `{"choices":[{"delta":{"role":"assistant","content":"\n"},"finish_reason":"stop"}]}`
-	const finishChunk = `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"finish_1","type":"function","function":{"name":"finish","arguments":"{\"message\":\"selesai\"}"}}]},"finish_reason":"tool_calls"}]}`
+// TestProcessMessagePlainAnswer verifies the default langchaingo behavior: a
+// natural text answer stops the loop and is returned as-is (no scold, no
+// mandatory finish tool).
+func TestProcessMessagePlainAnswer(t *testing.T) {
+	srv := fakeChatServer(t, []string{textChunk("Hai!")}, nil)
+	defer srv.Close()
+	agent := newAgent(t, srv)
 
-	var calls int
-	chatSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		calls++
-		chunk := stubChunk
-		if calls > 1 {
-			chunk = finishChunk
+	res := agent.ProcessMessage(context.Background(), "halo", nil, &ProcessOptions{ChatID: 1})
+	if res.Text != "Hai!" {
+		t.Fatalf("unexpected final text: %q", res.Text)
+	}
+	if len(res.ResponseMessages) != 1 {
+		t.Fatalf("expected a single final assistant message, got %d", len(res.ResponseMessages))
+	}
+	if res.ResponseMessages[0].Role != "assistant" || res.ResponseMessages[0].Text() != "Hai!" {
+		t.Fatalf("final assistant message not persisted: %+v", res.ResponseMessages[0])
+	}
+}
+
+// TestRunOnceOmitsProviderToolID verifies that a provider omitting the
+// tool-call id in its streaming deltas still produces a wire request whose tool
+// call and tool result share the same non-empty id — Gemini 400s otherwise.
+func TestRunOnceOmitsProviderToolID(t *testing.T) {
+	var secondBody map[string]any
+	srv := fakeChatServer(t, []string{
+		toolCallChunkNoID("test_tool", `{}`),
+		textChunk("done"),
+	}, func(t *testing.T, body map[string]any) {
+		secondBody = body
+	})
+	defer srv.Close()
+
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	agent := &Agent{
+		Client: model,
+		Config: &config.Config{MaxLoop: 5},
+	}
+	tools := map[string]*Tool{
+		"test_tool": {
+			Name: "test_tool",
+			Run:  func(ctx context.Context, args map[string]any) (any, error) { return map[string]any{"ok": true}, nil },
+		},
+	}
+
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if res.finalText != "done" {
+		t.Fatalf("unexpected final text: %q", res.finalText)
+	}
+
+	msgs, ok := secondBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("no messages in second request body")
+	}
+	var callID, resultID string
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
 		}
-		io.WriteString(w, "data: "+chunk+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
-	}))
-	defer chatSrv.Close()
+		switch m["role"] {
+		case "assistant":
+			if tcs, ok := m["tool_calls"].([]any); ok {
+				for _, tc := range tcs {
+					if tcm, ok := tc.(map[string]any); ok {
+						if id, _ := tcm["id"].(string); id != "" {
+							callID = id
+						}
+					}
+				}
+			}
+		case "tool":
+			if id, ok := m["tool_call_id"].(string); ok && id != "" {
+				resultID = id
+			}
+		}
+	}
+	if callID == "" {
+		t.Fatal("replayed tool call has no id")
+	}
+	if resultID == "" {
+		t.Fatal("replayed tool result has no id")
+	}
+	if callID != resultID {
+		t.Fatalf("tool call/result id mismatch on wire: %q vs %q", callID, resultID)
+	}
+}
 
+// TestProcessMessageEmptyOutput verifies that an empty text-only model response
+// does not pollute history: ProcessMessage retries and falls back to the error
+// text.
+func TestProcessMessageEmptyOutput(t *testing.T) {
+	srv := fakeChatServer(t, []string{textChunk("\n")}, nil)
+	defer srv.Close()
+
+	agent := newAgent(t, srv)
+	res := agent.ProcessMessage(context.Background(), "halo", nil, &ProcessOptions{ChatID: 1})
+	if res.Text != "Maaf, saya tidak bisa merespons saat ini." {
+		t.Fatalf("unexpected fallback text: %q", res.Text)
+	}
+	for _, m := range res.ResponseMessages {
+		if strings.TrimSpace(m.Text()) == "" && !messages.IsParts(m) {
+			t.Fatalf("empty stub persisted into response: %+v", m)
+		}
+	}
+}
+
+// TestProviderStrictArguments verifies that tool calls whose arguments came
+// back malformed from the model are normalized to valid JSON objects before the
+// assistant tool-call message is replayed to the provider ([400] ... invalid
+// 'arguments' guard).
+func TestProviderStrictArguments(t *testing.T) {
+	type wireMsg struct {
+		Role      string `json:"role"`
+		ToolCalls []struct {
+			Function struct {
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	}
+	var wireErr error
+	srv := fakeChatServer(t, []string{
+		toolCallChunk("echo_tool", `not-valid-json`),
+		textChunk("ok"),
+	}, func(t *testing.T, body map[string]any) {
+		if wireErr != nil {
+			return
+		}
+		raw, err := json.Marshal(body["messages"])
+		if err != nil {
+			wireErr = err
+			return
+		}
+		var msgs []wireMsg
+		if err := json.Unmarshal(raw, &msgs); err != nil {
+			wireErr = err
+			return
+		}
+		for _, m := range msgs {
+			for _, tc := range m.ToolCalls {
+				if !json.Valid(tc.Function.Arguments) {
+					wireErr = &invalidArgs{args: string(tc.Function.Arguments)}
+					return
+				}
+			}
+		}
+	})
+	defer srv.Close()
+
+	toolRan := false
+	agent := newAgent(t, srv)
+	agent.ToolsBuild = func(opts *ProcessOptions) (map[string]*Tool, error) {
+		return map[string]*Tool{
+			"echo_tool": {
+				Name: "echo_tool",
+				Run: func(ctx context.Context, args map[string]any) (any, error) {
+					toolRan = true
+					return args, nil
+				},
+			},
+		}, nil
+	}
+	res := agent.ProcessMessage(context.Background(), "halo", nil, &ProcessOptions{ChatID: 1})
+	if wireErr != nil {
+		t.Fatalf("invalid arguments sent to provider: %v", wireErr)
+	}
+	if !toolRan {
+		t.Fatal("echo_tool was not executed")
+	}
+	if res.Text != "ok" {
+		t.Fatalf("unexpected final text: %q", res.Text)
+	}
+}
+
+type invalidArgs struct{ args string }
+
+func (e *invalidArgs) Error() string { return "assistant tool call arguments are not valid JSON: " + e.args }
+
+// newAgent builds an Agent wired to the fake server (VFS/Catalog so
+// ProcessMessage can render the system prompt).
+func newAgent(t *testing.T, srv *httptest.Server) *Agent {
+	t.Helper()
 	fbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer fbSrv.Close()
+	t.Cleanup(fbSrv.Close)
 
 	fb := firebase.New(fbSrv.URL, fbSrv.Client())
-	agent := &Agent{
-		Client:  &Client{BaseURL: chatSrv.URL, APIKey: "test", Model: "test", HTTP: chatSrv.Client()},
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	return &Agent{
+		Client:  model,
 		Config:  &config.Config{MaxLoop: 5, MemoryMaxChars: 8000},
 		VFS:     vfs.New(fb),
 		Catalog: skills.NewCatalog(vfs.New(fb)),
 		ToolsBuild: func(opts *ProcessOptions) (map[string]*Tool, error) {
+			// At least one tool so ProcessMessage does not short-circuit on an
+			// empty tool set; the fake models never invoke it.
 			return map[string]*Tool{
-				"finish": {
-					Name: "finish",
+				"list_directory": {
+					Name: "list_directory",
 					Run: func(ctx context.Context, args map[string]any) (any, error) {
-						return map[string]any{"done": true, "message": args["message"]}, nil
+						return map[string]any{"entries": []any{}}, nil
 					},
 				},
 			}, nil
 		},
 	}
+}
 
-	res := agent.ProcessMessage(context.Background(), "halo", nil, &ProcessOptions{ChatID: 1})
-	if res.Text != "selesai" {
-		t.Fatalf("unexpected final text: %q", res.Text)
+// TestToolArgsJSON covers the normalization rules.
+func TestToolArgsJSON(t *testing.T) {
+	cases := map[string]string{
+		"":                 "{}",
+		"   ":              "{}",
+		`{}`:               `{}`,
+		`{"path":"a.js"}`:  `{"path":"a.js"}`,
+		`not json`:         `{"input":"not json"}`,
+		`"a string"`:       `{"input":"a string"}`,
 	}
-	if calls != 2 {
-		t.Fatalf("expected 2 chat calls (stub round + scold round), got %d", calls)
-	}
-	for _, m := range res.ResponseMessages {
-		if m.Text() == "\n" || (strings.TrimSpace(m.Text()) == "" && !messages.IsParts(m)) {
-			t.Fatalf("protocol-violation stub persisted into response: %+v", m)
+	for in, want := range cases {
+		if got := toolArgsJSON(in); got != want {
+			t.Errorf("toolArgsJSON(%q) = %s, want %s", in, got, want)
 		}
 	}
 }

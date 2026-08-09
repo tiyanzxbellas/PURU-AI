@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/tmc/langchaingo/llms"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
 	"github.com/purujawa06-bot/PURU-AI/internal/app"
@@ -47,18 +48,24 @@ func main() {
 	registrySvc := skills.NewRegistry(vfsSvc, hc)
 	e2bSvc := e2b.NewManager(cfg.E2BApiKey, cfg.E2BDomain, hc)
 
-	llm := &ai.Client{BaseURL: cfg.AI.BaseURL, APIKey: cfg.AI.APIKey, Model: cfg.AI.Model, HTTP: hc}
-	// clientFor resolves the model client per chat: users with their own API
-	// settings (settings/{chatID} in RTDB) get their own endpoint/key/model,
-	// everything else inherits the server default. Each request builds a fresh
-	// Client over the shared http.Client, so parallel users never share a
-	// mutating struct.
-	clientFor := func(ctx context.Context, chatID int64) *ai.Client {
+	llm, err := ai.NewModel(cfg.AI.BaseURL, cfg.AI.APIKey, cfg.AI.Model, hc)
+	if err != nil {
+		log.Fatalf("ai model: %v", err)
+	}
+	// clientFor resolves the model per chat: users with their own API settings
+	// (settings/{chat} in RTDB) get their own endpoint/key/model, everything
+	// else inherits the server default. Each request builds a fresh model over
+	// the shared http.Client, so parallel users never share a mutating struct.
+	clientFor := func(ctx context.Context, chatID int64) llms.Model {
 		aiCfg := cfg.AI
 		if u := settingsSvc.Get(ctx, chatID); u != nil {
 			aiCfg = settings.Effective(aiCfg, u)
 		}
-		return &ai.Client{BaseURL: aiCfg.BaseURL, APIKey: aiCfg.APIKey, Model: aiCfg.Model, HTTP: hc}
+		m, merr := ai.NewModel(aiCfg.BaseURL, aiCfg.APIKey, aiCfg.Model, hc)
+		if merr != nil {
+			return llm
+		}
+		return m
 	}
 	agentSvc := &ai.Agent{
 		Client:    llm,

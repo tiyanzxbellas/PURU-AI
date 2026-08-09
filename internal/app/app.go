@@ -74,6 +74,22 @@ func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 		return nil
 	}
 	userID := msg.From.ID
+
+	// Non-AI commands run immediately and are never swallowed by the busy
+	// guard: they don't touch the per-user AI pipeline. Only plain text, /ai
+	// commands and documents are serialized per user.
+	if msg.Document == nil && isCommandText(msg.Text) {
+		direct, _ := splitCommand(msg.Text)
+		if direct != "/ai" {
+			go func() {
+				if err := a.handleText(ctx, msg); err != nil {
+					log.Printf("[app] async command for user %d failed: %v", userID, err)
+				}
+			}()
+			return nil
+		}
+	}
+
 	if !a.tryAcquire(userID) {
 		return a.safeReply(ctx, msg, "⏳ Masih ada yang lagi diproses, tunggu sebentar ya...", true)
 	}
