@@ -5,6 +5,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -99,6 +100,11 @@ func (v *VFS) ReadFile(ctx context.Context, chatID int64, path string) (string, 
 	}
 	raw := v.fb.Get(ctx, contentPath(chatID, p))
 	if len(raw) == 0 {
+		return "", false
+	}
+	// RTDB returns literal JSON null for a missing node; treat it as absent
+	// (json.Unmarshal("null", &string) would otherwise silently yield "").
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return "", false
 	}
 	var s string

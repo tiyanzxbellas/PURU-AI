@@ -80,7 +80,10 @@ func main() {
 	vfsSvc := vfs.New(fb)
 	histStore := history.New(fb, cfg.HistoryCacheMax, cfg.HistoryCacheTTL)
 	catalogSvc := skills.NewCatalog(vfsSvc)
-	registrySvc := skills.NewRegistry(vfsSvc, hc)
+	registrySvc := skills.NewRegistry(vfsSvc, skills.RegistryOptions{
+		GitHubToken:  cfg.GitHubToken,
+		ClawHubToken: cfg.ClawHubToken,
+	})
 	e2bSvc := e2b.NewManager(cfg.E2BApiKey, cfg.E2BDomain, hc)
 
 	llm, err := ai.NewModel(cfg.AI.BaseURL, cfg.AI.APIKey, cfg.AI.Model, hc)

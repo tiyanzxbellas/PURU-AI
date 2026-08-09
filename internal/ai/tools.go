@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/jsrun"
+	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 )
 
 const (
@@ -385,13 +386,23 @@ var toolRunners = map[string]func(ctx context.Context, e *toolEnv, a map[string]
 	},
 
 	"search_skills": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
-		results := e.agent.Registry.SearchSkills(ctx, argStr(a, "query"))
-		return map[string]any{"query": argStr(a, "query"), "results": results, "count": len(results)}, nil
+		query := argStr(a, "query")
+		results, err := e.agent.Registry.SearchSkills(ctx, query)
+		if err != nil {
+			return map[string]any{"query": query, "error": err.Error(), "results": []any{}, "count": 0}, nil
+		}
+		return map[string]any{"query": query, "results": results, "count": len(results)}, nil
 	},
 
 	"install_skill": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
-		res := e.agent.Registry.InstallFromGitHub(ctx, e.opts.ChatID, argStr(a, "url"))
-		return map[string]any{"success": res.Success, "error": res.Error, "name": res.Name, "path": res.Path}, nil
+		target := argStr(a, "url")
+		var res skills.InstallResult
+		if strings.HasPrefix(target, "clawhub:") {
+			res = e.agent.Registry.InstallFromClawHub(ctx, e.opts.ChatID, strings.TrimPrefix(target, "clawhub:"))
+		} else {
+			res = e.agent.Registry.InstallFromGitHub(ctx, e.opts.ChatID, target)
+		}
+		return map[string]any{"success": res.Success, "error": res.Error, "name": res.Name, "path": res.Path, "warning": res.Warning}, nil
 	},
 }
 
@@ -444,8 +455,8 @@ var toolDescriptions = map[string]string{
 	"create_skill":        "Membuat skill baru di /skills/ virtual file system dengan metadata dan workflow.",
 	"use_skills":          "Membaca dan menggunakan skill dari /skills/ virtual file system.",
 	"delete_skill":        "Menghapus skill dari /skills/ virtual file system.",
-	"search_skills":       "Mencari skill dari GitHub berdasarkan kata kunci.",
-	"install_skill":       "Menginstall skill dari URL GitHub repository.",
+	"search_skills":       "Mencari skill dari GitHub (code search) dan ClawHub berdasarkan kata kunci.",
+	"install_skill":       "Menginstall skill. url bisa berupa slug/URL GitHub (mis. openclaw/openclaw) atau target ClawHub dengan prefix clawhub: (mis. clawhub:weather).",
 }
 
 var toolSchemas = map[string]map[string]any{}
@@ -539,6 +550,6 @@ func init() {
 		"query": sp(`Kata kunci pencarian (contoh: "weather", "web scraping").`),
 	})
 	toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
-		"url": sp(`URL GitHub repository yang berisi skill (contoh: "https://github.com/user/repo" atau "user/repo").`),
+		"url": sp(`Target install: slug/URL GitHub berisi skill (contoh: "user/repo", "https://github.com/user/repo") atau target ClawHub dengan prefix clawhub: (contoh: "clawhub:weather").`),
 	})
 }

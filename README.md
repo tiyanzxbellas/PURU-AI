@@ -44,8 +44,9 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 | `/reset memory` | Hapus MEMORY.md (ingatan user) |
 | `/reset chat` | Hapus riwayat percakapan + file VFS |
 | `/skills` | Menampilkan daftar skill |
-| `/skills search <query>` | Mencari skill dari GitHub |
-| `/skills install <url>` | Install skill dari GitHub (dukung `https://github.com/...` atau `owner/repo`) |
+| `/skills search <query>` | Mencari skill — GitHub code search (`filename:SKILL.md`) + ClawHub |
+| `/skills install <target>` | Install skill (GitHub `owner/repo[/path]` atau URL; ClawHub `clawhub:<slug>`) |
+| `/skills builtin [nama]` | Lihat / install skill bawaan (`weather`, `summarize`, `github`, `skill-creator`) |
 | `/skills info <nama>` | Menampilkan detail skill |
 | `/skills read <nama>` | Membaca isi skill |
 | `/skills delete <nama>` | Menghapus skill |
@@ -69,7 +70,7 @@ internal/
 ├── history/            — history persistence (LRU+TTL + RTDB)
 ├── settings/           — per-user API config (base URL/key/model) di RTDB + cache TTL
 ├── tokens/             — tiktoken-go (o200k_base)
-├── skills/             — loader/manifest SKILL.md + registry GitHub
+├── skills/             — loader/manifest SKILL.md + registry manager (import logika `pkg/skills` picoclaw: code search, install disk→VFS, builtin)
 ├── prompt/             — system prompt (text/template, braces di-escape)
 ├── memory/             — auto-update MEMORY.md (model langchaingo streaming SSE-tolerant)
 ├── jsrun/              — goja: cheerio shim + evaluate math
@@ -91,6 +92,7 @@ Skema tools memakai JSON-Schema yang valid untuk provider ketat: `required` sela
 - [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing untuk crawl
 - [tiktoken-go](https://github.com/tiktoken-go/tokenizer) — tokenizer `o200k_base`
 - [godotenv](https://github.com/joho/godotenv) — load `.env`
+- [picoclaw](https://github.com/sipeed/picoclaw) — `pkg/skills` (registry GitHub code search `filename:SKILL.md`, ClawHub, installer) diadaptasi ke VFS
 - Firebase Realtime Database — storage VFS & history
 
 ## Instalasi
@@ -137,6 +139,8 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
 | `E2B_TEMPLATE` | `code-interpreter-v1` | Template sandbox E2B untuk eksekusi kode (template `default` sudah dihapus dari platform E2B) |
+| `GITHUB_TOKEN` | *(kosong)* | Token GitHub untuk `/skills search`. **Wajib** — GitHub code search API menolak tanpa token (HTTP 401) |
+| `CLAWHUB_APIKEY` | *(kosong)* | Token ClawHub (opsional). Registry ClawHub aktif bila diisi (base URL default `https://clawhub.ai`) |
 
 ## Debug CLI
 

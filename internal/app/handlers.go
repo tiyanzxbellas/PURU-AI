@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
 	"github.com/purujawa06-bot/PURU-AI/internal/tokens"
 )
@@ -22,8 +23,9 @@ const menuText = "*PURU-AI*\n\n" +
 	"CMD: /ai <pesan>\nDESC: \"Mengobrol dengan AI (khusus grup)\"\n\n" +
 	"---SKILLS-MENU---\n\n" +
 	"CMD: /skills\nDESC: \"Lihat daftar skill\"\n\n" +
-	"CMD: /skills search <query>\nDESC: \"Cari skill dari GitHub\"\n\n" +
-	"CMD: /skills install <url>\nDESC: \"Install skill dari GitHub\"\n\n" +
+	"CMD: /skills search <query>\nDESC: \"Cari skill (GitHub/ClawHub)\"\n\n" +
+	"CMD: /skills install <slug>\nDESC: \"Install skill dari GitHub/ClawHub\"\n\n" +
+	"CMD: /skills builtin\nDESC: \"Lihat & install skill bawaan\"\n\n" +
 	"CMD: /skills info <nama>\nDESC: \"Info detail skill\"\n\n" +
 	"CMD: /skills read <nama>\nDESC: \"Baca isi skill\"\n\n" +
 	"CMD: /skills delete <nama>\nDESC: \"Hapus skill\"\n\n" +
@@ -189,7 +191,7 @@ func (a *App) cmdSkills(ctx context.Context, msg *telegram.Message, rest string)
 	if len(args) == 0 {
 		list := a.catalog.ListSkills(ctx, userID)
 		if len(list) == 0 {
-			return a.safeReply(ctx, msg, "Belum ada skill tersimpan.\n\nGunakan:\n/skills search <query> — Mencari skill\n/skills install <url> — Install dari GitHub", true)
+			return a.safeReply(ctx, msg, "Belum ada skill tersimpan.\n\nGunakan:\n/skills search <query> — Mencari skill\n/skills install <slug> — Install dari GitHub\n/skills builtin — Skill bawaan", true)
 		}
 		var sb strings.Builder
 		for i, s := range list {
@@ -213,7 +215,10 @@ func (a *App) cmdSkills(ctx context.Context, msg *telegram.Message, rest string)
 		if err != nil {
 			return err
 		}
-		results := a.registry.SearchSkills(ctx, query)
+		results, err := a.registry.SearchSkills(ctx, query)
+		if err != nil {
+			return a.safeEdit(ctx, msg.Chat.ID, thID, "❌ "+err.Error())
+		}
 		if len(results) == 0 {
 			return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf(`Tidak ditemukan skill untuk %q`, query))
 		}
@@ -222,20 +227,61 @@ func (a *App) cmdSkills(ctx context.Context, msg *telegram.Message, rest string)
 			if i >= 10 {
 				break
 			}
-			fmt.Fprintf(&sb, "%d. *%s*\n   %s...\n   %s\n\n", i+1, r.DisplayName, truncateStrIn(r.Summary, 100), r.URL)
+			badge := ""
+			if r.RegistryName != "" {
+				badge = fmt.Sprintf(" `[%s]`", r.RegistryName)
+			}
+			installTarget := r.Slug
+			if r.RegistryName == "clawhub" {
+				installTarget = "clawhub:" + r.Slug
+			}
+			fmt.Fprintf(&sb, "%d. *%s*%s\n   %s\n   /skills install %s\n\n", i+1, r.DisplayName, badge, truncateStrIn(r.Summary, 100), installTarget)
 		}
-		return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("🔍 *Hasil Pencarian \"%s\":*\n\n%s\n\nGunakan /skills install <url> untuk menginstall", query, sb.String()))
+		return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("🔍 *Hasil Pencarian \"%s\":*\n\n%s_Install: /skills install <target>_", query, sb.String()))
 	case "install":
 		if len(args) < 2 {
-			return a.safeReply(ctx, msg, "Gunakan: /skills install <url>\n\nContoh:\n/skills install https://github.com/user/repo\n/skills install user/repo", true)
+			return a.safeReply(ctx, msg, "Gunakan: /skills install <slug>\n\nContoh:\n/skills install user/repo\n/skills install https://github.com/user/repo\n/skills install clawhub:<slug>", true)
 		}
 		thID, err := a.sendThinking(ctx, msg, "📦 Menginstall skill...")
 		if err != nil {
 			return err
 		}
-		res := a.registry.InstallFromGitHub(ctx, userID, args[1])
+		target := args[1]
+		var res skills.InstallResult
+		if strings.HasPrefix(target, "clawhub:") {
+			res = a.registry.InstallFromClawHub(ctx, userID, strings.TrimPrefix(target, "clawhub:"))
+		} else {
+			res = a.registry.InstallFromGitHub(ctx, userID, target)
+		}
 		if res.Success {
-			return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("✅ Skill \"%s\" berhasil diinstall!\n\nPath: %s\n\nGunakan /skills info %s untuk melihat detail.", res.Name, res.Path, res.Name))
+			msgBody := fmt.Sprintf("✅ Skill \"%s\" berhasil diinstall!\n\nPath: %s", res.Name, res.Path)
+			if res.Warning != "" {
+				msgBody += "\n\n⚠️ " + res.Warning
+			}
+			msgBody += fmt.Sprintf("\n\nGunakan /skills info %s untuk melihat detail.", res.Name)
+			return a.safeEdit(ctx, msg.Chat.ID, thID, msgBody)
+		}
+		return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("❌ Gagal install: %s", res.Error))
+	case "builtin":
+		if len(args) < 2 {
+			names := skills.ListBuiltinSkills()
+			if len(names) == 0 {
+				return a.safeReply(ctx, msg, "Tidak ada skill bawaan tersedia.", true)
+			}
+			var sb strings.Builder
+			for _, n := range names {
+				sb.WriteString("• " + n + "\n")
+			}
+			return a.safeReply(ctx, msg, "🏗️ *Skill Bawaan:*\n\n"+sb.String()+"\nGunakan /skills builtin <nama> untuk menginstall", true)
+		}
+		name := args[1]
+		thID, err := a.sendThinking(ctx, msg, "📦 Memasang skill bawaan...")
+		if err != nil {
+			return err
+		}
+		res := a.registry.InstallBuiltin(ctx, userID, name)
+		if res.Success {
+			return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("✅ Skill \"%s\" berhasil diinstall!\n\nPath: %s", res.Name, res.Path))
 		}
 		return a.safeEdit(ctx, msg.Chat.ID, thID, fmt.Sprintf("❌ Gagal install: %s", res.Error))
 	case "info":

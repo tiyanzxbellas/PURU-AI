@@ -28,6 +28,8 @@ type Config struct {
 	HistoryCacheTTL   int64
 	MemoryUpdateEvery int
 	MemoryMaxChars    int
+	GitHubToken       string
+	ClawHubToken      string
 }
 
 func Load() (*Config, error) {
@@ -97,6 +99,8 @@ func Load() (*Config, error) {
 		HistoryCacheTTL:   int64(historyCacheTTL),
 		MemoryUpdateEvery: memoryUpdateEvery,
 		MemoryMaxChars:    memoryMaxChars,
+		GitHubToken:       os.Getenv("GITHUB_TOKEN"),
+		ClawHubToken:      os.Getenv("CLAWHUB_APIKEY"),
 	}, nil
 }
 

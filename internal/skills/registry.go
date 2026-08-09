@@ -4,350 +4,278 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
+	pcconfig "github.com/sipeed/picoclaw/pkg/config"
+	pcskills "github.com/sipeed/picoclaw/pkg/skills"
+)
+
+const (
+	maxSearchResult       = 20
+	maxSkillFileSize      = 2 << 20
+	defaultGitHubBaseURL  = "https://github.com"
+	defaultClawHubBaseURL = "https://clawhub.ai"
 )
 
 type SearchResult struct {
-	Slug        string
-	DisplayName string
-	Summary     string
-	URL         string
+	Score        float64
+	Slug         string
+	DisplayName  string
+	Summary      string
+	Version      string
+	RegistryName string
+	URL          string
 }
 
 type InstallResult struct {
-	Success bool
-	Name    string
-	Error   string
-	Path    string
+	Success      bool
+	Name         string
+	Path         string
+	Error        string
+	IsSuspicious bool
+	Warning      string
 }
 
-type GitHubRef struct {
-	Owner       string
-	Repo        string
-	Ref         string
-	SubPath     string
-	ExplicitRef bool
+// RegistryOptions wires the skill registry manager. The picoclaw registry
+// logic is imported (github code search filename:SKILL.md, clawhub, cache)
+// and its file-based installer is adapted to write into the per-user VFS.
+type RegistryOptions struct {
+	GitHubToken           string // optional; required for GitHub code search
+	ClawHubToken          string // optional ClawHub token; enables the clawhub registry
+	MaxConcurrentSearches int    // default 2
 }
-
-const (
-	githubAPIBase   = "https://api.github.com"
-	rawGitHubBase   = "https://raw.githubusercontent.com"
-	skillMarkdown   = "SKILL.md"
-	maxSearchResult = 20
-	maxRetries      = 3
-)
 
 type Registry struct {
-	VFS  *vfs.VFS
-	HTTP *http.Client
+	vfs            *vfs.VFS
+	manager        *pcskills.RegistryManager
+	githubToken    string
+	clawhubEnabled bool
 }
 
-func NewRegistry(v *vfs.VFS, hc *http.Client) *Registry {
-	if hc == nil {
-		hc = &http.Client{}
+func NewRegistry(v *vfs.VFS, opts RegistryOptions) *Registry {
+	maxConc := opts.MaxConcurrentSearches
+	if maxConc <= 0 {
+		maxConc = 2
 	}
-	return &Registry{VFS: v, HTTP: hc}
-}
+	clawhubEnabled := opts.ClawHubToken != ""
 
-func parseGitHubRef(input string) *GitHubRef {
-	trimmed := strings.TrimSpace(input)
-	if strings.HasPrefix(trimmed, "https://github.com/") || strings.HasPrefix(trimmed, "http://github.com/") {
-		u, err := url.Parse(trimmed)
-		if err != nil {
-			return nil
-		}
-		parts := splitNonEmpty(u.Path, "/")
-		if len(parts) < 2 {
-			return nil
-		}
-		ref := &GitHubRef{Owner: parts[0], Repo: parts[1], Ref: "main", ExplicitRef: false}
-		treeIdx := -1
-		for i, p := range parts {
-			if p == "tree" {
-				treeIdx = i
-				break
-			}
-		}
-		if treeIdx != -1 && treeIdx+1 < len(parts) {
-			ref.Ref = parts[treeIdx+1]
-			ref.ExplicitRef = true
-			if treeIdx+2 < len(parts) {
-				ref.SubPath = strings.Join(parts[treeIdx+2:], "/")
-			}
-		}
-		return ref
+	cfg := pcconfig.SkillsToolsConfig{
+		Registries: []*pcconfig.SkillRegistryConfig{
+			{
+				Name:      "github",
+				Enabled:   true,
+				BaseURL:   defaultGitHubBaseURL,
+				AuthToken: *pcconfig.NewSecureString(opts.GitHubToken),
+			},
+		},
+		MaxConcurrentSearches: maxConc,
 	}
-	parts := strings.Split(trimmed, "/")
-	if len(parts) < 2 {
-		return nil
-	}
-	ref := &GitHubRef{Owner: parts[0], Repo: parts[1], Ref: "main", ExplicitRef: false}
-	if len(parts) > 2 {
-		ref.SubPath = strings.Join(parts[2:], "/")
-	}
-	return ref
-}
-
-func splitNonEmpty(s, sep string) []string {
-	var out []string
-	for _, p := range strings.Split(s, sep) {
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func (r *Registry) fetchWithRetry(ctx context.Context, url string) ([]byte, int, error) {
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, 0, err
-		}
-		req.Header.Set("Accept", "application/vnd.github+json")
-		resp, err := r.HTTP.Do(req)
-		if err != nil {
-			lastErr = err
-		} else {
-			body, rerr := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
-			resp.Body.Close()
-			if rerr != nil {
-				return nil, resp.StatusCode, rerr
-			}
-			return body, resp.StatusCode, nil
-		}
-		if attempt < maxRetries {
-			sleepMS(ctx, 1000*attempt)
-		}
-	}
-	return nil, 0, lastErr
-}
-
-func (r *Registry) fetchGitHubTree(ctx context.Context, owner, repo, ref string) ([]string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1", githubAPIBase, owner, repo, ref)
-	body, status, err := r.fetchWithRetry(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	if status >= 400 {
-		return nil, fmt.Errorf("GitHub API error: %d", status)
-	}
-	var data struct {
-		Tree []struct {
-			Type string `json:"type"`
-			Path string `json:"path"`
-		} `json:"tree"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, err
-	}
-	var paths []string
-	for _, item := range data.Tree {
-		if item.Type == "blob" {
-			paths = append(paths, item.Path)
-		}
-	}
-	return paths, nil
-}
-
-func (r *Registry) fetchRawFile(ctx context.Context, owner, repo, ref, filePath string) (string, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s/%s", rawGitHubBase, owner, repo, ref, filePath)
-	body, status, err := r.fetchWithRetry(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	if status >= 400 {
-		return "", fmt.Errorf("Failed to fetch %s: %d", filePath, status)
-	}
-	return string(body), nil
-}
-
-func (r *Registry) getDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s", githubAPIBase, owner, repo)
-	body, status, err := r.fetchWithRetry(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	if status >= 400 {
-		return "", fmt.Errorf("GitHub API error: %d", status)
-	}
-	var data struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return "", err
-	}
-	if data.DefaultBranch == "" {
-		return "main", nil
-	}
-	return data.DefaultBranch, nil
-}
-
-func (r *Registry) SearchSkills(ctx context.Context, query string) []SearchResult {
-	var results []SearchResult
-	searchURL := fmt.Sprintf("%s/search/repositories?q=%s&per_page=%d", githubAPIBase, url.QueryEscape("skill "+query), maxSearchResult)
-	body, status, err := r.fetchWithRetry(ctx, searchURL)
-	if err != nil || status >= 400 {
-		return results
-	}
-	var data struct {
-		Items []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			HTMLURL     string `json:"html_url"`
-			Owner       struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return results
-	}
-	for _, item := range data.Items {
-		if !strings.Contains(strings.ToLower(item.Name), "skill") && !strings.Contains(strings.ToLower(item.Description), "skill") {
-			continue
-		}
-		summary := item.Description
-		if len(summary) > 200 {
-			summary = summary[:200]
-		}
-		results = append(results, SearchResult{
-			Slug:        item.Owner.Login + "/" + item.Name,
-			DisplayName: item.Name,
-			Summary:     summary,
-			URL:         item.HTMLURL,
+	if clawhubEnabled {
+		cfg.Registries = append(cfg.Registries, &pcconfig.SkillRegistryConfig{
+			Name:      "clawhub",
+			Enabled:   true,
+			BaseURL:   defaultClawHubBaseURL,
+			AuthToken: *pcconfig.NewSecureString(opts.ClawHubToken),
 		})
 	}
-	return results
+
+	return &Registry{
+		vfs:            v,
+		manager:        pcskills.NewRegistryManagerFromToolsConfig(cfg),
+		githubToken:    opts.GitHubToken,
+		clawhubEnabled: clawhubEnabled,
+	}
 }
 
-func (r *Registry) InstallFromGitHub(ctx context.Context, chatID int64, input string) InstallResult {
-	ref := parseGitHubRef(input)
-	if ref == nil {
-		return InstallResult{Error: "URL GitHub tidak valid"}
+// SearchSkills searches every enabled registry (GitHub, ClawHub) concurrently
+// and merges results sorted by score. Requires GITHUB_TOKEN — GitHub's code
+// search API returns HTTP 401 "Requires authentication" without one.
+func (r *Registry) SearchSkills(ctx context.Context, query string) ([]SearchResult, error) {
+	if r.manager == nil {
+		return nil, fmt.Errorf("registry tidak dikonfigurasi")
 	}
-	if !ref.ExplicitRef {
-		branch, err := r.getDefaultBranch(ctx, ref.Owner, ref.Repo)
-		if err != nil {
-			return InstallResult{Success: false, Error: "Gagal resolve branch: " + err.Error()}
-		}
-		ref.Ref = branch
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("query pencarian kosong")
+	}
+	if r.githubToken == "" && !r.clawhubEnabled {
+		return nil, fmt.Errorf("GITHUB_TOKEN belum diset di .env — GitHub code search membutuhkan token (lihat /skills)")
 	}
 
-	filePaths, err := r.fetchGitHubTree(ctx, ref.Owner, ref.Repo, ref.Ref)
+	results, err := r.manager.SearchAll(ctx, strings.TrimSpace(query), maxSearchResult)
 	if err != nil {
-		return InstallResult{Success: false, Error: "Gagal install skill: " + err.Error()}
+		return nil, err
 	}
-
-	filtered := filePaths
-	if ref.SubPath != "" {
-		filtered = nil
-		for _, p := range filePaths {
-			if p == ref.SubPath || strings.HasPrefix(p, ref.SubPath+"/") {
-				filtered = append(filtered, p)
-			}
+	out := make([]SearchResult, 0, len(results))
+	for _, res := range results {
+		url := ""
+		if reg := r.manager.GetRegistry(res.RegistryName); reg != nil {
+			url = reg.SkillURL(res.Slug, res.Version)
 		}
+		out = append(out, SearchResult{
+			Score:        res.Score,
+			Slug:         res.Slug,
+			DisplayName:  res.DisplayName,
+			Summary:      res.Summary,
+			Version:      res.Version,
+			RegistryName: res.RegistryName,
+			URL:          url,
+		})
 	}
-
-	skillMdPath := ""
-	for _, p := range filtered {
-		if base := p[lastSlash(p)+1:]; base == skillMarkdown {
-			skillMdPath = p
-			break
-		}
-	}
-	if skillMdPath == "" {
-		return InstallResult{Success: false, Error: "SKILL.md tidak ditemukan di repository"}
-	}
-
-	skillRoot := ""
-	if last := lastSlash(skillMdPath); last >= 0 {
-		skillRoot = skillMdPath[:last]
-	}
-
-	var rootPaths []string
-	if skillRoot != "" {
-		for _, p := range filtered {
-			if strings.HasPrefix(p, skillRoot+"/") {
-				rootPaths = append(rootPaths, p)
-			}
-		}
-	} else {
-		rootPaths = filtered
-	}
-
-	skillMdContent, err := r.fetchRawFile(ctx, ref.Owner, ref.Repo, ref.Ref, skillMdPath)
-	if err != nil {
-		return InstallResult{Success: false, Error: "Gagal install skill: " + err.Error()}
-	}
-	metadata := NewCatalog(r.VFS).ParseFrontmatter(skillMdContent)
-	skillName := metadata.Name
-	if skillName == "" {
-		skillName = ref.Repo
-	}
-	if msg := ValidateSkillName(skillName); msg != "" {
-		return InstallResult{Success: false, Error: msg}
-	}
-	if _, ok := r.VFS.ReadFile(ctx, chatID, "skills/"+skillName+"/SKILL.md"); ok {
-		return InstallResult{Success: false, Error: fmt.Sprintf("Skill %q sudah terinstall", skillName)}
-	}
-
-	for _, filePath := range rootPaths {
-		content, err := r.fetchRawFile(ctx, ref.Owner, ref.Repo, ref.Ref, filePath)
-		if err != nil {
-			return InstallResult{Success: false, Error: "Gagal install skill: " + err.Error()}
-		}
-		relative := filePath
-		if skillRoot != "" {
-			relative = filePath[len(skillRoot)+1:]
-		}
-		if err := r.VFS.WriteFile(ctx, chatID, "skills/"+skillName+"/"+relative, content); err != nil {
-			return InstallResult{Success: false, Error: "Gagal install skill: " + err.Error()}
-		}
-	}
-	return InstallResult{Success: true, Name: skillName, Path: "skills/" + skillName + "/SKILL.md"}
+	return out, nil
 }
 
+// InstallFromGitHub installs a GitHub skill (slug owner/repo[/subpath] or URL)
+// into the per-user VFS. picoclaw downloads to a temp dir on disk first; the
+// files are then moved into the VFS and the disk copy is removed.
+func (r *Registry) InstallFromGitHub(ctx context.Context, chatID int64, target string) InstallResult {
+	return r.installFromRegistry(ctx, chatID, "github", target)
+}
+
+// InstallFromClawHub installs a skill from ClawHub by slug.
+func (r *Registry) InstallFromClawHub(ctx context.Context, chatID int64, slugTarget string) InstallResult {
+	return r.installFromRegistry(ctx, chatID, "clawhub", slugTarget)
+}
+
+func (r *Registry) installFromRegistry(ctx context.Context, chatID int64, registryName, target string) InstallResult {
+	if r.manager == nil {
+		return InstallResult{Error: "registry manager tidak dikonfigurasi"}
+	}
+	if r.vfs == nil {
+		return InstallResult{Error: "VFS tidak tersedia"}
+	}
+	reg := r.manager.GetRegistry(registryName)
+	if reg == nil {
+		return InstallResult{Error: fmt.Sprintf("Registry %q tidak aktif", registryName)}
+	}
+
+	dirName, err := reg.ResolveInstallDirName(target)
+	if err != nil || dirName == "" {
+		return InstallResult{Error: "Target install tidak valid"}
+	}
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/"+dirName+"/SKILL.md"); ok {
+		return InstallResult{Error: fmt.Sprintf("Skill %q sudah terinstall", dirName)}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "puru-skill-")
+	if err != nil {
+		return InstallResult{Error: "Gagal membuat direktori sementara: " + err.Error()}
+	}
+	defer os.RemoveAll(tmpDir)
+
+	res, err := reg.DownloadAndInstall(ctx, target, "", tmpDir)
+	if err != nil {
+		return InstallResult{Error: "Gagal install skill: " + err.Error()}
+	}
+	if res.IsMalwareBlocked {
+		return InstallResult{Error: "Skill tidak dapat diinstall (terdeteksi sebagai malware)"}
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "SKILL.md")); err != nil {
+		return InstallResult{Error: "SKILL.md tidak ditemukan di repository"}
+	}
+
+	if err := r.moveDiskToVFS(ctx, tmpDir, chatID, dirName, maxSkillFileSize); err != nil {
+		return InstallResult{Error: "Gagal menyimpan skill ke penyimpanan: " + err.Error()}
+	}
+	r.writeOriginMeta(ctx, chatID, dirName, registryName, target, res.Version)
+
+	result := InstallResult{Success: true, Name: dirName, Path: "skills/" + dirName + "/SKILL.md"}
+	if res.IsSuspicious {
+		result.IsSuspicious = true
+		result.Warning = "Skill ditandai mencurigakan — gunakan dengan hati-hati."
+	}
+	if res.Summary != "" {
+		result.Warning = strings.TrimSpace(res.Summary)
+	}
+	return result
+}
+
+// moveDiskToVFS walks the temp install dir and writes every file into
+// skills/<dirName>/... in the per-user VFS (files > maxBytes are skipped).
+func (r *Registry) moveDiskToVFS(ctx context.Context, tmpDir string, chatID int64, dirName string, maxBytes int64) error {
+	return filepath.Walk(tmpDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(tmpDir, p)
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxBytes {
+			return fmt.Errorf("file %s melebihi batas ukuran", rel)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return r.vfs.WriteFile(ctx, chatID, "skills/"+dirName+"/"+rel, string(data))
+	})
+}
+
+type installedOriginMeta struct {
+	Version          int    `json:"version"`
+	OriginKind       string `json:"origin_kind,omitempty"`
+	Registry         string `json:"registry,omitempty"`
+	Slug             string `json:"slug,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	InstalledAt      int64  `json:"installed_at"`
+}
+
+func (r *Registry) writeOriginMeta(ctx context.Context, chatID int64, dirName, registry, slug, version string) {
+	meta := installedOriginMeta{
+		Version:          1,
+		OriginKind:       "third_party",
+		Registry:         registry,
+		Slug:             slug,
+		InstalledVersion: version,
+		InstalledAt:      time.Now().UnixMilli(),
+	}
+	if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
+		_ = r.vfs.WriteFile(ctx, chatID, "skills/"+dirName+"/.skill-origin.json", string(b))
+	}
+}
+
+// InstallFromContent stores an inline skill (created by the agent).
 func (r *Registry) InstallFromContent(ctx context.Context, chatID int64, name, description, body string) InstallResult {
 	if msg := ValidateSkillName(name); msg != "" {
 		return InstallResult{Success: false, Error: msg}
 	}
-	if _, ok := r.VFS.ReadFile(ctx, chatID, "skills/"+name+"/SKILL.md"); ok {
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/"+name+"/SKILL.md"); ok {
 		return InstallResult{Success: false, Error: fmt.Sprintf("Skill %q sudah terinstall", name)}
 	}
 	content := BuildSkillContent(name, description, body, "", nil)
 	skillPath := "skills/" + name + "/SKILL.md"
-	if err := r.VFS.WriteFile(ctx, chatID, skillPath, content); err != nil {
+	if err := r.vfs.WriteFile(ctx, chatID, skillPath, content); err != nil {
 		return InstallResult{Success: false, Error: err.Error()}
 	}
 	return InstallResult{Success: true, Name: name, Path: skillPath}
 }
 
+// UpdateSkill overwrites an existing inline skill body.
 func (r *Registry) UpdateSkill(ctx context.Context, chatID int64, name, description, body string) InstallResult {
 	if msg := ValidateSkillName(name); msg != "" {
 		return InstallResult{Success: false, Error: msg}
 	}
-	if _, ok := r.VFS.ReadFile(ctx, chatID, "skills/"+name+"/SKILL.md"); !ok {
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/"+name+"/SKILL.md"); !ok {
 		return InstallResult{Success: false, Error: fmt.Sprintf("Skill %q tidak ditemukan", name)}
 	}
 	content := BuildSkillContent(name, description, body, "", nil)
 	skillPath := "skills/" + name + "/SKILL.md"
-	if err := r.VFS.WriteFile(ctx, chatID, skillPath, content); err != nil {
+	if err := r.vfs.WriteFile(ctx, chatID, skillPath, content); err != nil {
 		return InstallResult{Success: false, Error: err.Error()}
 	}
 	return InstallResult{Success: true, Name: name, Path: skillPath}
 }
 
 func (r *Registry) MigrateOldSkills(ctx context.Context, chatID int64) (migrated int, errors []string) {
-	cat := NewCatalog(r.VFS)
-	entries := r.VFS.ListDirectory(ctx, chatID, "skills")
+	cat := NewCatalog(r.vfs)
+	entries := r.vfs.ListDirectory(ctx, chatID, "skills")
 	for _, entry := range entries {
 		if entry.Name == "" || entry.Type != "file" || !strings.HasSuffix(entry.Name, ".md") {
 			continue
@@ -355,11 +283,11 @@ func (r *Registry) MigrateOldSkills(ctx context.Context, chatID int64) (migrated
 		oldName := strings.TrimSuffix(entry.Name, ".md")
 		oldPath := "skills/" + entry.Name
 		newPath := "skills/" + oldName + "/SKILL.md"
-		content, ok := r.VFS.ReadFile(ctx, chatID, oldPath)
+		content, ok := r.vfs.ReadFile(ctx, chatID, oldPath)
 		if !ok {
 			continue
 		}
-		if _, ok := r.VFS.ReadFile(ctx, chatID, newPath); ok {
+		if _, ok := r.vfs.ReadFile(ctx, chatID, newPath); ok {
 			errors = append(errors, fmt.Sprintf("Skill %q sudah ada di format baru", oldName))
 			continue
 		}
@@ -374,33 +302,15 @@ func (r *Registry) MigrateOldSkills(ctx context.Context, chatID int64) (migrated
 		}
 		_, body := SplitFrontmatter(content)
 		newContent := BuildSkillContent(skillName, description, body, "", nil)
-		if err := r.VFS.WriteFile(ctx, chatID, newPath, newContent); err != nil {
+		if err := r.vfs.WriteFile(ctx, chatID, newPath, newContent); err != nil {
 			errors = append(errors, err.Error())
 			continue
 		}
-		if _, err := r.VFS.DeleteFile(ctx, chatID, oldPath); err != nil {
+		if _, err := r.vfs.DeleteFile(ctx, chatID, oldPath); err != nil {
 			errors = append(errors, err.Error())
 			continue
 		}
 		migrated++
 	}
 	return migrated, errors
-}
-
-func lastSlash(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
-}
-
-func sleepMS(ctx context.Context, ms int) {
-	t := time.NewTimer(time.Duration(ms) * time.Millisecond)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-	}
 }

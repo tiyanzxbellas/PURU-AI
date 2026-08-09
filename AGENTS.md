@@ -23,6 +23,8 @@
   - `MEMORY_UPDATE_EVERY` — interval pesan user untuk auto-update MEMORY.md (default: `3`)
   - `MEMORY_MAX_CHARS` — cap konten MEMORY.md saat di-inject (default: `8000`)
   - `E2B_TEMPLATE` — template sandbox E2B untuk eksekusi kode (default: `code-interpreter-v1`; template `default` lama sudah dihapus dari platform E2B → HTTP 404). Dibaca via `getEnv` di `internal/e2b`, bukan `config.go`.
+  - `GITHUB_TOKEN` — token GitHub untuk `/skills search`. **Wajib** untuk code search (`filename:SKILL.md`); tanpa token API balas HTTP 401 → `/skills search` menampilkan pesan "GITHUB_TOKEN belum diset".
+  - `CLAWHUB_APIKEY` — token registry skill ClawHub (opsional). Registry clawhub aktif bila diisi; base URL memakai default (`https://clawhub.ai`).
 
 ## Arsitektur (Go, module `github.com/purujawa06-bot/PURU-AI`)
 - `main.go` — entrypoint: config → health server → `getMe` → `deleteWebhook(drop_pending)` → konflict-retry loop (exit setelah 5 conflict berurut).
@@ -34,10 +36,10 @@
 - `internal/messages` — model pesan `ModelMessage` kompatibel dengan schema Vercel AI SDK (round-trip field tak dikenal dipertahankan) + port `pruneMessages`/`EnsureStartsWithUser`/`CapUserTurns`/`Sanitize`.
 - `internal/firebase` — helper REST ing RTDB (GET/PUT/DELETE `.json` + base64url path).
 - `internal/settings` — config API per-user (base URL/key/model) di RTDB `settings/{chatID}` (partial override; field kosong = inherit global) + cache TTL in-memory. `Effective(global, user)` menggabungkan override.
-- `internal/vfs` — virtual file system per-user di RTDB.
+- `internal/vfs` — virtual file system per-user di RTDB. `ReadFile` memperlakukan respons RTDB literal `null` sebagai file **tidak ada** (return `false`); tanpa pengecekan ini, `json.Unmarshal("null", &string)` diam-diam menghasilkan file "ada tapi kosong" dan membuat install skill salah melaporkan "sudah terinstall".
 - `internal/history` — persistensi history (LRU+TTL + RTDB; hasil copy bukan mutasi cache).
 - `internal/tokens` — wrapper tiktoken-go (`o200k_base`).
-- `internal/skills` — parsing SKILL.md (frontmatter) + registry GitHub (search/tree/install/migrate).
+- `internal/skills` — parsing SKILL.md (frontmatter) + registry manager yang **mengimpor logika `pkg/skills` picoclaw** (`github.com/sipeed/picoclaw/pkg/skills`). Search memakai **GitHub code search** `GET /search/code?q=<query> filename:SKILL.md` (dedup per slug `owner/repo[/subdir]`, sort by score, clamp 20; 401/403 → hasil kosong + warning) + registry ClawHub via `RegistryManager.SearchAll` (fan-out concurrent, semaphore, merge by score). Install picoclaw menulis ke **temp dir disk** → hasil walk dipindah ke per-user VFS (`skills/<dir>/...`, file >2MB ditolak) lalu temp dir dihapus; metadata asal ditulis ke `skills/<dir>/.skill-origin.json`. Skill bawaan di-embed (`internal/skills/builtin/` via `go:embed`: weather, summarize, github, skill-creator, lisensi MIT picoclaw) untuk `/skills builtin`. Tool AI `install_skill` merutekan target ber-prefix `clawhub:` ke `InstallFromClawHub`, selain itu ke `InstallFromGitHub`.
 - `internal/prompt` — system prompt `text/template`. Literal braces seperti `/skills/{{name}}/SKILL.md` WAJIB di-escape (`{{"{{"}}` / `{{"}}"}}`), analog larvae AGENTS lama.
 - `internal/memory` — auto-update `/memory/MEMORY.md` via model langchaingo (`llms.Model.GenerateContent`, streaming SSE-tolerant).
 - `internal/jsrun` — runtime goja untuk `crawl` (shim cheerio di atas goquery) + `calculate_math` (Math.*/alias).
