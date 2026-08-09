@@ -2,8 +2,48 @@ package ai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+// TestNormalizeURL verifies crawl URL handling: empty values and invalid URLs
+// must yield a clear error (not "unsupported protocol scheme"), while missing
+// schemes get https:// prepended and unsupported schemes are rejected.
+// Regression: the model occasionally passes an empty url, which used to leak a
+// raw http client error back to the agent.
+func TestNormalizeURL(t *testing.T) {
+	tests := []struct {
+		raw   string
+		want  string
+		errOn string
+	}{
+		{raw: "https://example.com/article", want: "https://example.com/article"},
+		{raw: "example.com/x", want: "https://example.com/x"},
+		{raw: "  http://example.com  ", want: "http://example.com"},
+		{raw: "", errOn: "url kosong"},
+		{raw: "   ", errOn: "url kosong"},
+		{raw: "ftp://example.com", errOn: "skema URL"},
+		{raw: "javascript:alert(1)", errOn: "skema URL"},
+		{raw: "http://", errOn: "host kosong"},
+	}
+	for _, tc := range tests {
+		got, err := normalizeURL(tc.raw)
+		if tc.errOn != "" {
+			if err == nil {
+				t.Errorf("normalizeURL(%q): expected error containing %q, got %q", tc.raw, tc.errOn, got)
+			} else if !strings.Contains(err.Error(), tc.errOn) {
+				t.Errorf("normalizeURL(%q): error %q does not contain %q", tc.raw, err, tc.errOn)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("normalizeURL(%q): unexpected error: %v", tc.raw, err)
+		}
+		if got != tc.want {
+			t.Errorf("normalizeURL(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
 
 // TestToolSchemasValid verifies every tool schema is JSON-schema-clean for
 // strict OpenAI-compatible providers: "required" must be an array (or absent),

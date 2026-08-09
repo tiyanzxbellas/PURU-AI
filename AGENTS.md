@@ -3,6 +3,8 @@
 ## Mulai Cepat
 - `go run .` — jalankan bot lokal (load `.env` via godotenv)
 - `go build -o dist/puru-ai .` — kompilasi binary
+- `go run ./cmd/cli "pesan..."` — chat langsung dengan agent (debug, tanpa Telegram)
+- `cli.bat "pesan..."` / `cli.sh "pesan..."` — alias cepat ke `go run ./cmd/cli`
 - `go vet ./...` — static analysis
 - `go test ./...` — unit test (jsrun, messages, prompt, settings)
 - `gofmt -l .` — cek format
@@ -24,6 +26,7 @@
 
 ## Arsitektur (Go, module `github.com/purujawa06-bot/PURU-AI`)
 - `main.go` — entrypoint: config → health server → `getMe` → `deleteWebhook(drop_pending)` → konflict-retry loop (exit setelah 5 conflict berurut).
+- `cmd/cli` — debug CLI tanpa Telegram: wiring service sama persis `main.go` (config → firebase → vfs/history/skills/e2b → model → memory), lalu `ai.Agent.ProcessMessage` dengan pipeline identik `processMessage` (prune→cap→proses→persist→memory). One-shot (`cli.bat "pesan"`) atau REPL; chat id debug default `-777` (terpisah dari user publik), flag `-reset`/`-verbose`/`-save-files`/`-no-memory`. Dipakai untuk debugging cepat tanpa Telegram.
 - `internal/config` — config loader.
 - `internal/telegram` — klien Telegram Bot API **ditulis manual** (poling `getUpdates` synchronous, `sendMessage`, `editMessageText`, `sendDocument/Audio/Video`, `getFile`+download). Sebab utama ditulis sendiri: bot memproses update **sekali-sekali secara beruntun** (satu goroutine) seperti `bot.start()` di grammY, dan deteksi conflict (409) harus presisi.
 - `internal/app` — handler bot: dispatcher command + busy-guard per-user (paralel antar-user), pipeline pesan (prune→cap→sanitize→token→memory), safe reply/edit/send, upload dokumen (maks 10MB).
@@ -58,7 +61,7 @@
 - **Per-user API config**: `/config` (api/model/base/clear/test) dipakai user untuk memakai API sendiri; partial override global via `settings.Effective`. Resolver `ClientFor(ctx, chatID)` membuat model langchaingo `llms.Model` fresh per request (pakai http.Client global) ⇒ aman paralel. Memory update juga ikut API user. Path `settings/{chatID}` di RTDB terpisah dari `fs/` & `history/` sehingga `/reset chat` tidak menghapus config.
 - **/reset terpisah**: `/reset` polos = help; `/reset config` hapus settings user; `/reset memory` hapus MEMORY.md + reset counter `meta.userTurns`; `/reset chat` = `DeleteHistory` + `vfs.DeleteAll` (perilaku /reset lama).
 - **E2B**: satu sandbox per chat, TTL 5 menit idle, auto-kill; `runCode` hasil NDJSON `{type: stdout/stderr/result/error}`.
-- **Math & crawl**: evaluasi lewat goja. `calculate_math` menyediakan alias Math (`sqrt`, `pow`, ...). `crawl` mengharapkan snippet cheerio JavaScript (shim compat: `text`, `html`, `attr`, `val`, `length`, `first`, `last`, `eq`, `find`, `parent`, `parents`, `children`, `filter`, `each`, `map`, `get`, `toArray`, passthrough `$(el)`); snippet boleh ekspresi atau statement `return {...};` (`normalizeCheerioCode` men-strip leading `return` + trailing `;` sebelum di-wrap evaluator, dijaga `jsrun_test.go`).
+- **Math & crawl**: evaluasi lewat goja. `calculate_math` menyediakan alias Math (`sqrt`, `pow`, ...). `crawl` mengharapkan snippet cheerio JavaScript (shim compat: `text`, `html`, `attr`, `val`, `length`, `first`, `last`, `eq`, `find`, `parent`, `parents`, `children`, `filter`, `each`, `map`, `get`, `toArray`, passthrough `$(el)`); snippet boleh ekspresi atau statement `return {...};` (`normalizeCheerioCode` men-strip leading `return` + trailing `;` sebelum di-wrap evaluator, dijaga `jsrun_test.go`). URL crawl di-normalisasi dulu (`normalizeURL` di `internal/ai/tools.go`): url kosong/invalid/skema non-http(s)/host kosong mengembalikan error jelas (bukan `unsupported protocol scheme` mentah dari `http.Client`), url tanpa skema diberi prefix `https://`; dijaga `tools_test.go`.
 - **Tool schema**: `required` di function schema hanya disertakan bila ada (dihilangkan saat kosong) — provider OpenAI-compatible tertentu menolak `"required": null`; dijaga `internal/ai/tools_test.go`.
 
 ## Konvensi

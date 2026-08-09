@@ -11,7 +11,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
 - **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`, template default `code-interpreter-v1`)
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
-- **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery); request memakai User-Agent browser agar situs yang memblokir client non-browser (mis. Wikipedia HTTP 403 untuk `Go-http-client/1.1`) tetap bisa di-crawl; snippet boleh berbentuk ekspresi (`$("h1").text()`) maupun statement `return {...};` (dinormalisasi otomatis)
+- **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery); request memakai User-Agent browser agar situs yang memblokir client non-browser (mis. Wikipedia HTTP 403 untuk `Go-http-client/1.1`) tetap bisa di-crawl; snippet boleh berbentuk ekspresi (`$("h1").text()`) maupun statement `return {...};` (dinormalisasi otomatis); URL di-normalisasi dulu (prefix `https://` bila tanpa skema) dan url kosong/invalid/skema non-http(s) mengembalikan error jelas
 - **Math & Time** — evaluasi matematika (goja) dan tools jam dengan timezone IANA
 - **Group Chat** — gunakan `/ai <pesan>` di grup; semua command juga bisa memakai suffix `@username_bot` (mis. `/menu@nama_bot`)
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Kegagalan balasan AI (toolset build, model tidak tersedia, respon kosong) selalu ditulis ke log dengan prefix `[ai]` (per-attempt + `finish_reason` + alasan akhir) supaya fallback "Maaf, saya tidak bisa merespons saat ini." mudah ditelusuri penyebabnya
@@ -138,6 +138,32 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
 | `E2B_TEMPLATE` | `code-interpreter-v1` | Template sandbox E2B untuk eksekusi kode (template `default` sudah dihapus dari platform E2B) |
 
+## Debug CLI
+
+Chat langsung dengan agent PURU-AI dari terminal **tanpa Telegram** — berguna untuk
+debugging cepat karena pipeline (prune → cap → proses → persist → memory) identik
+dengan handler bot asli.
+
+```bash
+go run ./cmd/cli "halo, siapa kamu?"   # one-shot, jawaban ke stdout
+cli.bat "halo"                         # alias Windows
+./cli.sh "halo"                        # alias Unix
+go run ./cmd/cli                       # REPL interaktif (ketik /exit untuk keluar)
+```
+
+Opsi:
+
+| Flag | Deskripsi |
+|------|-----------|
+| `-chat <id>` | Chat/user id debug (default `-777`, terpisah dari user publik) |
+| `-reset` | Hapus history + VFS untuk chat id lalu exit |
+| `-verbose` | Tampilkan tool-call per langkah + token usage |
+| `-save-files <dir>` | Simpan file hasil `send_file` ke direktori (default: hanya di-print) |
+| `-no-memory` | Nonaktifkan auto-update MEMORY.md |
+
+History & VFS disimpan di Firebase RTDB per chat id, jadi konteks multi-turn tetap
+bertahan antar-run.
+
 ## Docker
 
 Build dan jalankan dengan Docker:
@@ -158,6 +184,7 @@ GitHub Actions otomatis build & push ke Docker Hub saat push ke `main`. Secrets 
 |---------|-----------|
 | `go run .` | Jalankan bot lokal |
 | `go build -o dist/puru-ai .` | Compile binary |
+| `go run ./cmd/cli "pesan"` | Debug CLI: chat langsung dengan agent (tanpa Telegram) |
 | `go test ./...` | Unit test (ai, jsrun, messages, prompt, settings) |
 | `go vet ./...` | Static analysis |
 | `gofmt -l .` | Cek format |

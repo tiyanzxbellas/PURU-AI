@@ -60,6 +60,31 @@ func argOpt(a map[string]any, k string) (string, bool) {
 	return s, ok
 }
 
+func normalizeURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("parameter url kosong — berikan URL lengkap yang ingin di-crawl")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("URL tidak valid: %v", err)
+	}
+	if u.Scheme == "" {
+		raw = "https://" + raw
+		u, err = url.Parse(raw)
+		if err != nil {
+			return "", fmt.Errorf("URL tidak valid: %v", err)
+		}
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("skema URL tidak didukung: %q (hanya http/https)", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("URL tidak valid: host kosong")
+	}
+	return raw, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementations
 // ---------------------------------------------------------------------------
@@ -190,7 +215,11 @@ var toolRunners = map[string]func(ctx context.Context, e *toolEnv, a map[string]
 	},
 
 	"crawl": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
-		target := argStr(a, "url")
+		raw := argStr(a, "url")
+		target, uerr := normalizeURL(raw)
+		if uerr != nil {
+			return map[string]any{"error": "Failed to crawl: " + uerr.Error(), "url": raw}, nil
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
 			return map[string]any{"error": "Failed to crawl: " + err.Error(), "url": target}, nil
@@ -509,7 +538,7 @@ func init() {
 	toolSchemas["search_skills"] = obj([]string{"query"}, map[string]any{
 		"query": sp(`Kata kunci pencarian (contoh: "weather", "web scraping").`),
 	})
-toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
+	toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
 		"url": sp(`URL GitHub repository yang berisi skill (contoh: "https://github.com/user/repo" atau "user/repo").`),
 	})
 }
