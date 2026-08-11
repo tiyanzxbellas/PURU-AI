@@ -2,22 +2,22 @@
 //
 // The bot talks to any OpenAI-compatible endpoint. All requests go through the
 // shared http.Client with the browser-like User-Agent so models used by the
-// crawl tool keep working. langchaingo always receives a StreamingFunc so the
-// OpenAI client sets stream:true and parses SSE chunks (some proxies reply with
-// SSE framing even for non-streaming requests).
+// crawl tool keep working. Requests are NOT streamed: langchaingo v0.1.14's
+// streaming client only concatenates tool-call argument fragments when the
+// delta has an empty `type`. Gateways that tag every streamed fragment with
+// `type:"function"` (observed on the HF Spaces gateway serving the `puru`
+// model) would then turn each argument chunk into a separate, empty-named
+// tool call, so tools were invoked with empty args and the loop exploded into
+// fake tool-calls until hitting the step limit. Non-streaming responses carry
+// the full JSON arguments on a single tool call and are assembled reliably.
 package ai
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 )
-
-// noopStream forces stream:true in the underlying OpenAI client without doing
-// anything with the chunks. The response is fully assembled by the client.
-func noopStream(context.Context, []byte) error { return nil }
 
 // NewModel builds an OpenAI-compatible langchaingo model for the given
 // endpoint/key/model using the shared HTTP client.

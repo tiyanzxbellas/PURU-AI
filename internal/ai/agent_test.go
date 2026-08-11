@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,9 +15,11 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
-// fakeChatServer streams SSE chat completions. The chunk for a given call is
-// picked by onCall(chunkIdx). Every HTTP request body is handed to checkBody
-// (when non-nil) so a test can validate the outgoing wire format.
+// fakeChatServer answers /chat/completions with non-streamed JSON ChatCompletion
+// responses — the bot's OpenAI client no longer requests SSE (see model.go), so
+// the fixtures mirror the real wire format. The response for call i is
+// chunks[i] (the last one is replayed for excess calls). Every HTTP request body
+// is handed to checkBody (when non-nil) so a test can validate the wire format.
 func fakeChatServer(t *testing.T, chunks []string, checkBody func(t *testing.T, body map[string]any)) *httptest.Server {
 	t.Helper()
 	var calls int
@@ -33,31 +34,32 @@ func fakeChatServer(t *testing.T, chunks []string, checkBody func(t *testing.T, 
 		if checkBody != nil {
 			checkBody(t, body)
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
 		calls++
 		idx := calls - 1
 		if idx >= len(chunks) {
 			idx = len(chunks) - 1
 		}
-		chunk := chunks[idx]
-		io.WriteString(w, "data: "+chunk+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(chunks[idx]))
 	}))
 }
 
+// toolCallChunk builds a non-streamed response whose assistant message performs
+// one tool call with a provider-supplied id.
 func toolCallChunk(name, args string) string {
-	// sha/api deltas streamed in one chunk
-	return `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
 }
 
+// toolCallChunkNoID builds a tool-call response that omits the tool-call id, as
+// some OpenAI-compatible gateways (Gemini-family) do. The agent must mint one so
+// the tool-result pairs up.
 func toolCallChunkNoID(name, args string) string {
-	// Some OpenAI-compatible gateways (Gemini-family) omit the tool-call id in
-	// the streamed delta. The agent must mint one so the tool-result pairs up.
-	return `{"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"index":0,"type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
 }
 
+// textChunk builds a non-streamed plain-text response that stops the loop.
 func textChunk(text string) string {
-	return `{"choices":[{"delta":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}`
+	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}`
 }
 
 // TestRunOnceToolContext runs runOnce (langchaingo executor) against a fake
