@@ -4,9 +4,9 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 
 ## Fitur
 
-- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + `llms/openai`) yang memanggil model secara streaming (SSE) dan menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib)
+- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + `llms/openai`) yang menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib). Model dipanggil **non-streaming** — streaming langchaingo v0.1.14 memecah argument tool-call dari gateway yang men-tag tiap fragment menjadi tool call kosong berantai (lihat `internal/ai/model.go`)
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools
-- **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via model langchaingo streaming dan dijaga minimal: maks 5 poin penting + baris topik yang sedang dibahas, info usang/irrelevan dibuang
+- **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via model langchaingo dan dijaga minimal: maks 5 poin penting + baris topik yang sedang dibahas, info usang/irrelevan dibuang
 - **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call & filler; jawaban final = teks stop natural executor (tanpa tool `finish`/scold); bila AI berhenti tanpa menghasilkan teks, output tidak dipersist ke history dan request dicoba ulang; pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi langsung tanpa tool; `arguments` tool call dinormalisasi jadi JSON objek valid dan tool-call `id` yang dikosongkan provider (mis. gateway Gemini) di-generate deterministik (`call_<n>`) sehingga tool result selalu berpasangan 1:1 dengan tool call-nya (mencegah `400 function response parts ≠ function call parts`)
 - **Persistent History** — chat history via Firebase RTDB + LRU cache (schema `ModelMessage` Vercel AI SDK v7, kompatibel dengan data bot versi TypeScript)
 - **E2B Sandbox** — eksekusi kode di lingkungan cloud terisolasi (klien HTTP port wire `@e2b/code-interpreter`, template default `code-interpreter-v1`)
@@ -72,7 +72,7 @@ internal/
 ├── tokens/             — tiktoken-go (o200k_base)
 ├── skills/             — loader/manifest SKILL.md + registry manager (import logika `pkg/skills` picoclaw: code search, install disk→VFS, builtin)
 ├── prompt/             — system prompt (text/template, braces di-escape)
-├── memory/             — auto-update MEMORY.md (model langchaingo streaming SSE-tolerant)
+├── memory/             — auto-update MEMORY.md (model langchaingo)
 ├── jsrun/              — goja: cheerio shim + evaluate math
 ├── e2b/                — client E2B murni HTTP (sandbox/execute/files)
 └── health/             — HTTP health check
