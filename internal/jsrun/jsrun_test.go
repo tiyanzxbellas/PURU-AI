@@ -38,6 +38,39 @@ func TestRunCheerioMapWithEl(t *testing.T) {
 	}
 }
 
+func TestRunCheerioMapGet(t *testing.T) {
+	html := `<html><body><p class="x">A</p><p class="x">B</p><p class="x">C</p></body></html>`
+	res, _, err := RunCheerio(html, `$("p").map(function(i, el){ return $(el).text(); }).get().slice(0, 2)`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res != `["A","B"]` {
+		t.Fatalf("map().get().slice result mismatch: %q", res)
+	}
+}
+
+func TestRunCheerioNext(t *testing.T) {
+	html := `<html><body><h1>Judul</h1><p>Paragraf</p></body></html>`
+	res, _, err := RunCheerio(html, `$("h1").next().text()`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res != "Paragraf" {
+		t.Fatalf("next result mismatch: %q", res)
+	}
+}
+
+func TestRunCheerioClosest(t *testing.T) {
+	html := `<html><body><table><tr><td class="x">sel</td></tr></table></body></html>`
+	res, _, err := RunCheerio(html, `$("td.x").closest("tr").text()`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res != "sel" {
+		t.Fatalf("closest result mismatch: %q", res)
+	}
+}
+
 func TestRunCheerioFindAttr(t *testing.T) {
 	html := `<html><body><a href="https://x/a" class="l">ting</a></body></html>`
 	res, _, err := RunCheerio(html, `$("a.l").first().attr("href")`)

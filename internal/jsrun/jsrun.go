@@ -6,8 +6,9 @@
 //
 // The shim only exposes the subset of the cheerio API that the AI commonly
 // uses (text, html, attr, val, length, first, last, eq, find, parent,
-// children, filter, each, map, get, toArray). Unknown calls return a Go-side
-// JS error which the tool surfaces.
+// parents, children, filter, each, map, get, toArray, next, nextAll, prev,
+// prevAll, siblings, closest). Unknown calls return a Go-side JS error which
+// the tool surfaces.
 package jsrun
 
 import (
@@ -35,6 +36,19 @@ for (var i = 0; i < __ctrls.length; i++) {
     console[k] = function(){ __capture(Array.prototype.slice.call(arguments).map(String).join(' ')); };
   })(__ctrls[i]);
 }
+function __M(arr) {
+  return {
+    get: function(i){ return arguments.length === 0 ? arr : arr[Number(i)]; },
+    toArray: function(){ return arr; },
+    slice: function(a, b){ return arr.slice(Number(a), b === undefined ? undefined : Number(b)); },
+    join: function(sep){ return arr.join(sep === undefined ? ',' : String(sep)); },
+    first: function(){ return __M(arr.slice(0, 1)); },
+    last: function(){ return __M(arr.slice(-1)); },
+    eq: function(i){ return __M([arr[Number(i)]]); },
+    map: function(fn){ return __M(arr.map(fn)); },
+    length: arr.length
+  };
+}
 function __S(h) {
   var o = {
     h: h,
@@ -51,9 +65,15 @@ function __S(h) {
     parents: function(){ return __S(__sParents(h)); },
     children: function(){ return __S(__sChildren(h)); },
     filter: function(s){ return __S(__sFilter(h, String(s))); },
+    next: function(){ return __S(__sNext(h)); },
+    nextAll: function(){ return __S(__sNextAll(h)); },
+    prev: function(){ return __S(__sPrev(h)); },
+    prevAll: function(){ return __S(__sPrevAll(h)); },
+    siblings: function(){ return __S(__sSiblings(h)); },
+    closest: function(s){ return __S(__sClosest(h, String(s))); },
     each: function(fn){ __sEach(h, fn); return o; },
-    map: function(fn){ var out = []; __sEach(h, function(i, sub){ out.push(fn(i, __S(sub))); }); return out; },
-    get: function(i){ return __sGet(h, Number(i)); },
+    map: function(fn){ var out = []; __sEach(h, function(i, sub){ out.push(fn(i, __S(sub))); }); return __M(out); },
+    get: function(i){ return arguments.length === 0 ? __sAll(h) : __sGet(h, Number(i)); },
     toArray: function(){ return __sToArray(h); },
     length: 0
   };
@@ -171,6 +191,32 @@ func RunCheerio(html, code string) (result string, consoleOutput string, err err
 	})
 	vm.Set("__sFilter", func(call goja.FunctionCall) goja.Value {
 		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).Filter(call.Argument(1).String()))))
+	})
+	vm.Set("__sNext", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).Next())))
+	})
+	vm.Set("__sNextAll", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).NextAll())))
+	})
+	vm.Set("__sPrev", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).Prev())))
+	})
+	vm.Set("__sPrevAll", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).PrevAll())))
+	})
+	vm.Set("__sSiblings", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).Siblings())))
+	})
+	vm.Set("__sClosest", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(int64(sh.add(sh.get(toIntArg(call.Argument(0))).Closest(call.Argument(1).String()))))
+	})
+	vm.Set("__sAll", func(call goja.FunctionCall) goja.Value {
+		s := sh.get(toIntArg(call.Argument(0)))
+		out := make([]any, 0, s.Length())
+		s.Each(func(_ int, ss *goquery.Selection) {
+			out = append(out, ss.Text())
+		})
+		return vm.ToValue(out)
 	})
 	vm.Set("__sEach", func(call goja.FunctionCall) goja.Value {
 		handle := call.Argument(0).ToInteger()
