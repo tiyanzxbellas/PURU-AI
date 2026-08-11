@@ -83,3 +83,14 @@ func TestEvalMathInvalid(t *testing.T) {
 		t.Fatalf("expected error for invalid expression")
 	}
 }
+
+// TestEvalMathNonFinite verifies that IEEE-754 non-finite results (Infinity/NaN)
+// are rejected as invalid instead of being returned to the model (regression:
+// 10/0 previously returned "Infinity" as a "successful" result).
+func TestEvalMathNonFinite(t *testing.T) {
+	for _, expr := range []string{"10 / 0", "0 / 0", "1e308 * 10", "Math.sqrt(-1)"} {
+		if _, err := EvalMath(expr); err == nil {
+			t.Errorf("EvalMath(%q) = success, want error for non-finite result", expr)
+		}
+	}
+}

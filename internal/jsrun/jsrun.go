@@ -12,6 +12,7 @@ package jsrun
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -286,6 +287,12 @@ func EvalMath(expr string) (string, error) {
 	}
 	val, err := vm.RunString("(function(){ return (" + expr + ");}())")
 	if err != nil {
+		return "", errors.New("Ekspresi matematika tidak valid")
+	}
+	// goja follows IEEE-754: expressions like 10/0 evaluate to Infinity and
+	// 0/0 to NaN instead of throwing. Those are not valid math results — surface
+	// them as an error rather than handing the model "Infinity".
+	if f := val.ToFloat(); math.IsInf(f, 0) || math.IsNaN(f) {
 		return "", errors.New("Ekspresi matematika tidak valid")
 	}
 	return stringifyValue(vm, val), nil

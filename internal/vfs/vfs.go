@@ -158,6 +158,12 @@ func (v *VFS) DeleteFile(ctx context.Context, chatID int64, path string) (bool, 
 	if len(raw) == 0 {
 		return false, nil
 	}
+	// RTDB returns literal JSON null for a missing node; treat it as absent so a
+	// delete of a non-existent file reports "not found" instead of a phantom
+	// success (mirrors the guard in ReadFile).
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false, nil
+	}
 	if err := v.fb.Delete(ctx, cp); err != nil {
 		return false, err
 	}
