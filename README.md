@@ -4,7 +4,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 
 ## Fitur
 
-- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + `llms/openai`) yang menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib). Model dipanggil **non-streaming** — streaming langchaingo v0.1.14 memecah argument tool-call dari gateway yang men-tag tiap fragment menjadi tool call kosong berantai (lihat `internal/ai/model.go`)
+- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + klien model OpenAI-compatible sendiri di `internal/ai/openai`) yang menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib). Model dipanggil **streaming** (`stream:true`) agar generasi panjang tidak kena timeout gateway 503; assembly tool-call SSE diperbaiki sendiri — klien langchaingo v0.1.14 memecah argument tool-call dari gateway yang men-tag tiap fragment (`type:"function"`) menjadi tool call kosong berantai
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools. Node yang hilang (literal `null` dari RTDB) diperlakukan sebagai file **tidak ada** di read & delete — `delete_file` untuk file yang tak ada dilaporkan error, bukan sukses palsu
 - **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via model langchaingo dan dijaga minimal: maks 5 poin penting + baris topik yang sedang dibahas, info usang/irrelevan dibuang
 - **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call & filler; jawaban final = teks stop natural executor (tanpa tool `finish`/scold); bila AI berhenti tanpa menghasilkan teks, output tidak dipersist ke history dan request dicoba ulang; pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi langsung tanpa tool; `arguments` tool call dinormalisasi jadi JSON objek valid dan tool-call `id` yang dikosongkan provider (mis. gateway Gemini) di-generate deterministik (`call_<n>`) sehingga tool result selalu berpasangan 1:1 dengan tool call-nya (mencegah `400 function response parts ≠ function call parts`)
@@ -87,7 +87,7 @@ Skema tools memakai JSON-Schema yang valid untuk provider ketat: `required` sela
 ## Tech Stack
 
 - Go 1.26
-- [langchaingo](https://github.com/tmc/langchaingo) — agent loop (`agents.Executor`) + OpenAI-compatible model (`llms/openai`)
+- [langchaingo](https://github.com/tmc/langchaingo) — agent loop (`agents.Executor`) + prompt/sesi; model OpenAI-compatible dipakai klien sendiri di `internal/ai/openai` (streaming SSE dengan assembly tool-call yang diperbaiki)
 - [goja](https://github.com/dop251/goja) — runtime JS untuk kode cheerio & evaluasi math
 - [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing untuk crawl
 - [tiktoken-go](https://github.com/tiktoken-go/tokenizer) — tokenizer `o200k_base`

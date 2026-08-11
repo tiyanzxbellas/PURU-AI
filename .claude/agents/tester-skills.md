@@ -54,7 +54,7 @@ go run ./cmd/cli -chat 71004 -verbose "…"
   (agent seharusnya berhenti & laporkan 409) — ini pola GAGAL penting.
 - `use_skills` gagal walau skill terinstall.
 - VFS "File not found" yang tidak seharusnya.
-- args tool-call kosong/fragmen (regresi streaming).
+- args tool-call kosong/fragmen (regresi streaming, lihat `internal/ai/openai`).
 
 ## Output
 

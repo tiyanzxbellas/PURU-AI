@@ -375,7 +375,7 @@ func (ra *requestAgent) Plan(
 		msgList = append(msgList, chatMessageToContent(m))
 	}
 
-	callOpts := []llms.CallOption{}
+	callOpts := []llms.CallOption{llms.WithStreamingFunc(noopStream)}
 	if ra.temperature != 0 {
 		callOpts = append(callOpts, llms.WithTemperature(ra.temperature))
 	}

@@ -44,7 +44,7 @@ go run ./cmd/cli -chat 71003 -save-files ./out-e2b "…"   # simpan file hasil s
 - `e2b_sandbox_create` error (mis. HTTP 404 template, API key invalid).
 - `e2b_run_code` error `No active sandbox` tanpa agent recovery membuat sandbox baru (agent seharusnya recover).
 - `e2b_install_package` gagal pip/npm.
-- Tool-call args kosong/fragmen (regresi streaming).
+- Tool-call args kosong/fragmen (regresi streaming, lihat `internal/ai/openai`).
 - Sandbox TTL auto-kill gagal → cek `internal/e2b` TTL logic.
 
 ## Output

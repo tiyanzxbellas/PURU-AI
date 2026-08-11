@@ -39,7 +39,7 @@ go run ./cmd/cli -chat 71002 -verbose "…"    # one-shot + tool trace
 
 - `crawl` kena `HTTP 403` untuk situs yang seharusnya boleh (regresi UA).
 - `search_web` gagal semua retry (`Search failed after 5 attempts`).
-- Tool-call args kosong/fragmen (regresi streaming, lihat `internal/ai/model.go`).
+- Tool-call args kosong/fragmen (regresi streaming, lihat `internal/ai/openai`).
 - `crawl` dengan URL kosong → harus error jelas, bukan `unsupported protocol scheme`.
 - Waktu salah (zona diabaikan, format salah).
 

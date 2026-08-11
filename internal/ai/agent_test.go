@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,11 +16,11 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
-// fakeChatServer answers /chat/completions with non-streamed JSON ChatCompletion
-// responses — the bot's OpenAI client no longer requests SSE (see model.go), so
-// the fixtures mirror the real wire format. The response for call i is
-// chunks[i] (the last one is replayed for excess calls). Every HTTP request body
-// is handed to checkBody (when non-nil) so a test can validate the wire format.
+// fakeChatServer answers /chat/completions with streamed SSE ChatCompletion
+// responses — the bot's model client streams (see internal/ai/openai), so the
+// fixtures mirror the real wire format. The response for call i is chunks[i]
+// (the last one is replayed for excess calls). Every HTTP request body is handed
+// to checkBody (when non-nil) so a test can validate the wire format.
 func fakeChatServer(t *testing.T, chunks []string, checkBody func(t *testing.T, body map[string]any)) *httptest.Server {
 	t.Helper()
 	var calls int
@@ -39,27 +40,80 @@ func fakeChatServer(t *testing.T, chunks []string, checkBody func(t *testing.T, 
 		if idx >= len(chunks) {
 			idx = len(chunks) - 1
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(chunks[idx]))
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, chunks[idx])
 	}))
 }
 
-// toolCallChunk builds a non-streamed response whose assistant message performs
-// one tool call with a provider-supplied id.
+// toolCallChunk builds a streamed response whose assistant delta performs one
+// tool call with a provider-supplied id.
 func toolCallChunk(name, args string) string {
-	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+	return `data: {"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}
+data: [DONE]`
 }
 
 // toolCallChunkNoID builds a tool-call response that omits the tool-call id, as
 // some OpenAI-compatible gateways (Gemini-family) do. The agent must mint one so
 // the tool-result pairs up.
 func toolCallChunkNoID(name, args string) string {
-	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"index":0,"type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}`
+	return `data: {"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}
+data: [DONE]`
 }
 
-// textChunk builds a non-streamed plain-text response that stops the loop.
+// textChunk builds a streamed plain-text response that stops the loop.
 func textChunk(text string) string {
-	return `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}`
+	return `data: {"choices":[{"delta":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}]}
+data: [DONE]`
+}
+
+// toolCallChunkHF builds a streamed tool-call response in the HF Spaces
+// gateway style: every argument fragment repeats type:"function" and the
+// arguments arrive split across several deltas. This is the regression that
+// langchaingo's own OpenAI client broke (empty-named tool-call chain).
+func toolCallChunkHF(name string, argFragments ...string) string {
+	type frag struct {
+		Index    *int   `json:"index,omitempty"`
+		ID       string `json:"id,omitempty"`
+		Type     string `json:"type,omitempty"`
+		Function struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"function"`
+	}
+	type choice struct {
+		Delta struct {
+			Content   string `json:"content"`
+			ToolCalls []frag `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	}
+	idx0 := 0
+	var sb strings.Builder
+	for i, fragArgs := range argFragments {
+		f := frag{Index: &idx0, Type: "function"}
+		if i == 0 {
+			f.ID = "t1"
+			f.Function.Name = name
+		}
+		f.Function.Arguments = fragArgs
+		payload := struct {
+			Choices []choice `json:"choices"`
+		}{
+			Choices: []choice{{
+				Delta: struct {
+					Content   string `json:"content"`
+					ToolCalls []frag `json:"tool_calls"`
+				}{
+					ToolCalls: []frag{f},
+				},
+				FinishReason: "tool_calls",
+			}},
+		}
+		b, _ := json.Marshal(payload)
+		sb.WriteString("data: " + string(b) + "\n")
+	}
+	sb.WriteString("data: [DONE]")
+	return sb.String()
 }
 
 // TestRunOnceToolContext runs runOnce (langchaingo executor) against a fake
@@ -204,6 +258,51 @@ func TestRunOnceOmitsProviderToolID(t *testing.T) {
 	}
 }
 
+// TestRunOnceHFStreamedToolCalls is the regression for the HF Spaces gateway:
+// streamed argument fragments that repeat type:"function" must assemble into
+// ONE tool call with the full arguments (langchaingo's own client turned them
+// into a chain of empty-named tool calls).
+func TestRunOnceHFStreamedToolCalls(t *testing.T) {
+	srv := fakeChatServer(t, []string{
+		toolCallChunkHF("write_file", `{"path":"a`, `bs.txt","content":"hello"}`),
+		textChunk("done"),
+	}, nil)
+	defer srv.Close()
+
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	agent := &Agent{
+		Client: model,
+		Config: &config.Config{MaxLoop: 5},
+	}
+	var gotArgs map[string]any
+	tools := map[string]*Tool{
+		"write_file": {
+			Name: "write_file",
+			Run: func(ctx context.Context, args map[string]any) (any, error) {
+				gotArgs = args
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+
+	res, err := agent.runOnce(context.Background(), "", nil, "tulis file", nil, tools)
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if res.finalText != "done" {
+		t.Fatalf("unexpected final text: %q", res.finalText)
+	}
+	if gotArgs == nil {
+		t.Fatal("write_file was not executed")
+	}
+	if gotArgs["path"] != "abs.txt" || gotArgs["content"] != "hello" {
+		t.Fatalf("write_file args misassembled: %+v", gotArgs)
+	}
+}
+
 // TestProcessMessageEmptyOutput verifies that an empty text-only model response
 // does not pollute history: ProcessMessage retries and falls back to the error
 // text.
@@ -292,7 +391,9 @@ func TestProviderStrictArguments(t *testing.T) {
 
 type invalidArgs struct{ args string }
 
-func (e *invalidArgs) Error() string { return "assistant tool call arguments are not valid JSON: " + e.args }
+func (e *invalidArgs) Error() string {
+	return "assistant tool call arguments are not valid JSON: " + e.args
+}
 
 // newAgent builds an Agent wired to the fake server (VFS/Catalog so
 // ProcessMessage can render the system prompt).
@@ -331,12 +432,12 @@ func newAgent(t *testing.T, srv *httptest.Server) *Agent {
 // TestToolArgsJSON covers the normalization rules.
 func TestToolArgsJSON(t *testing.T) {
 	cases := map[string]string{
-		"":                 "{}",
-		"   ":              "{}",
-		`{}`:               `{}`,
-		`{"path":"a.js"}`:  `{"path":"a.js"}`,
-		`not json`:         `{"input":"not json"}`,
-		`"a string"`:       `{"input":"a string"}`,
+		"":                "{}",
+		"   ":             "{}",
+		`{}`:              `{}`,
+		`{"path":"a.js"}`: `{"path":"a.js"}`,
+		`not json`:        `{"input":"not json"}`,
+		`"a string"`:      `{"input":"a string"}`,
 	}
 	for in, want := range cases {
 		if got := toolArgsJSON(in); got != want {

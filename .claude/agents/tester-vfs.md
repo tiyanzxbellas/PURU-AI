@@ -53,7 +53,8 @@ Gunakan pesan natural bahasa Indonesia yang memaksa agent memakai tool, mis:
 
 - Tool dipanggil dengan args kosong (`args={}`), tool-call bernama kosong
   (`🛠 tool-call: (call_n)`), atau `path=""` → ini regresi fragmentasi tool-call
-  dari gateway (lihat `internal/ai/model.go` — stream harus NON-aktif).
+  dari gateway (lihat `internal/ai/openai` — assembly stream harus menggabungkan
+  fragment argumen jadi satu tool call).
 - Jawaban model mengklaim hasil tanpa tool-call yang sesuai (halusinasi).
 - Kena `⚠️ Percakapan mencapai batas maksimum langkah` atau token akumulasi > 50k.
 - Error dari tool yang tidak dijelaskan (mis. `"error":"..."` pada tool-result).
