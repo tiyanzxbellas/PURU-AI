@@ -313,23 +313,14 @@ func (c *Catalog) DeleteSkill(ctx context.Context, chatID int64, name string) (b
 	if ValidateSkillName(name) != "" {
 		return false, nil
 	}
-	dirEntries := c.vfs.ListDirectory(ctx, chatID, "skills/"+name)
-	deleted := false
-	for _, e := range dirEntries {
-		if e.Name == "" {
-			continue
-		}
-		result, err := c.vfs.DeleteFile(ctx, chatID, "skills/"+name+"/"+e.Name)
-		if err != nil {
-			return false, err
-		}
-		if result {
-			deleted = true
-		}
+	// Directory-style skill (skills/<name>/SKILL.md + optional assets): remove
+	// the whole subtree recursively so no file or empty directory is left behind.
+	deleted, err := c.vfs.DeleteDir(ctx, chatID, "skills/"+name)
+	if err != nil {
+		return false, err
 	}
 	if deleted {
-		_, err := c.vfs.DeleteFile(ctx, chatID, "skills/"+name)
-		return true, err
+		return true, nil
 	}
 	if content, ok := c.vfs.ReadFile(ctx, chatID, "skills/"+name+".md"); ok {
 		_ = content

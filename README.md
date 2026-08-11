@@ -65,8 +65,8 @@ internal/
 ├── app/                — dispatcher command, busy-guard per-user, pipeline pesan, safe reply/send
 ├── ai/                 — agent langchaingo (executor + ChatPromptTemplate + custom agents.Agent) + 21 tools + processMessage (retry & normalisasi arguments)
 ├── messages/           — ModelMessage (kompatibel Vercel AI SDK v7), pruneMessages port
-├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url)
-├── vfs/                — virtual file system per-user
+├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url) + ListKeys shallow
+├── vfs/                — virtual file system per-user (DeleteDir pindai store content/index, tahan index korup)
 ├── history/            — history persistence (LRU+TTL + RTDB)
 ├── settings/           — per-user API config (base URL/key/model) di RTDB + cache TTL
 ├── tokens/             — tiktoken-go (o200k_base)

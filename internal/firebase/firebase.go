@@ -93,6 +93,39 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return nil
 }
 
+// ListKeys returns the direct child keys of a node via a shallow GET
+// (?shallow=true). Returns nil when the node is absent or the request fails.
+// Used by VFS.DeleteDir to enumerate the content/index stores independently of
+// the directory index, which Firebase RTDB eventual consistency can leave
+// stale after read-modify-write races.
+func (c *Client) ListKeys(ctx context.Context, path string) []string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pathJoin(c.base, path)+"?shallow=true", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	var keys map[string]bool
+	if err := json.Unmarshal(body, &keys); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(keys))
+	for k := range keys {
+		out = append(out, k)
+	}
+	return out
+}
+
 // NormalizePath normalizes a user-supplied path exactly like the TS code:
 // backslashes to slashes, collapsing repeated slashes, stripping leading and
 // trailing slashes.

@@ -7,8 +7,10 @@ package vfs
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 )
@@ -195,6 +197,87 @@ func (v *VFS) ListDirectory(ctx context.Context, chatID int64, path string) []En
 
 func (v *VFS) DeleteAll(ctx context.Context, chatID int64) error {
 	return v.fb.Delete(ctx, "fs/"+idKey(chatID))
+}
+
+// DeleteDir recursively removes the directory at path. Instead of walking the
+// directory index it scans the per-user content and index stores directly and
+// deletes every file body and index node under the path, then drops the
+// directory's entry from its parent index. Scanning the stores (not the index)
+// makes the delete complete even when Firebase RTDB eventual consistency left
+// an index entry missing (e.g. a skill whose SKILL.md entry was lost during
+// install) — such orphaned content would otherwise survive the delete.
+// Returns (false, nil) when nothing exists under the path.
+func (v *VFS) DeleteDir(ctx context.Context, chatID int64, path string) (bool, error) {
+	p := firebase.NormalizePath(path)
+	if p == "" {
+		return false, nil
+	}
+	id := idKey(chatID)
+	deleted := false
+
+	// File bodies live under fs/{id}/content/{b64path}; directories have no
+	// content node, so only exact-path and dir+"/" prefixes match files.
+	for _, key := range v.fb.ListKeys(ctx, "fs/"+id+"/content") {
+		fp, ok := decodePath(key)
+		if !ok || !underPath(fp, p) {
+			continue
+		}
+		if err := v.fb.Delete(ctx, contentPath(chatID, fp)); err != nil {
+			return false, err
+		}
+		deleted = true
+	}
+
+	// Index nodes live under fs/{id}/index/{b64path} for both files and dirs;
+	// remove every node in the subtree so no empty directory residue remains.
+	for _, key := range v.fb.ListKeys(ctx, "fs/"+id+"/index") {
+		ip, ok := decodePath(key)
+		if !ok || !underPath(ip, p) {
+			continue
+		}
+		if err := v.fb.Delete(ctx, indexPath(chatID, ip)); err != nil {
+			return false, err
+		}
+		deleted = true
+	}
+
+	if !deleted {
+		return false, nil
+	}
+
+	parent, hasParent := dirname(p)
+	parentPath := parent
+	if !hasParent {
+		parentPath = ""
+	}
+	doc := readIndex(ctx, v.fb, indexPath(chatID, parentPath))
+	filtered := doc.Entries[:0]
+	for _, e := range doc.Entries {
+		if e.Name != basename(p) {
+			filtered = append(filtered, e)
+		}
+	}
+	if len(filtered) != len(doc.Entries) {
+		doc.Entries = filtered
+		if err := writeIndex(ctx, v.fb, indexPath(chatID, parentPath), doc); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// decodePath reverses firebase.Base64 (URL-safe base64 with padding).
+func decodePath(enc string) (string, bool) {
+	raw, err := base64.URLEncoding.DecodeString(enc)
+	if err != nil {
+		return "", false
+	}
+	return firebase.NormalizePath(string(raw)), true
+}
+
+// underPath reports whether p is dir itself or nested under dir.
+func underPath(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 func (v *VFS) MoveFile(ctx context.Context, chatID int64, src, dst string) (success bool, errMsg string) {

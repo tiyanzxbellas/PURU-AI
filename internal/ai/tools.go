@@ -375,11 +375,11 @@ var toolRunners = map[string]func(ctx context.Context, e *toolEnv, a map[string]
 
 	"delete_skill": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
 		name := argStr(a, "name")
-		ok, err := e.agent.VFS.DeleteFile(ctx, e.opts.ChatID, "skills/"+name+"/SKILL.md")
+		deleted, err := e.agent.Catalog.DeleteSkill(ctx, e.opts.ChatID, name)
 		if err != nil {
 			return map[string]any{"success": false, "error": err.Error()}, nil
 		}
-		if !ok {
+		if !deleted {
 			return map[string]any{"success": false, "error": "Skill tidak ditemukan"}, nil
 		}
 		return map[string]any{"success": true}, nil
