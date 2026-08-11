@@ -81,6 +81,7 @@
 - Go toolchain 1.26+; format `gofmt`; tidak ada linter wajib selain `go vet`.
 - Import internal memakai module path `github.com/purujawa06-bot/PURU-AI/internal/...`.
 - Response ke user dalam Bahasa Indonesia & singkat; system prompt bahasa Inggris.
+- **Asisten Claude Code**: respons ke user (pengembang) WAJIB dalam Bahasa Indonesia (dialog alami, bukan terjemahan kaku). Kode, komentar, dan dokumentasi repo tetap mengikuti gaya yang ada.
 - **Setiap perubahan codebase WAJIB di-update `AGENTS.md` dan `README.md`.**
 
 ## Git & Tagging
