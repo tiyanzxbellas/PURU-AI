@@ -232,21 +232,56 @@ func (r *ExecutionResult) Error() string {
 	return r.ErrorMsg
 }
 
+// normalizeLanguage maps model-friendly language names to the kernel names the
+// E2B code-interpreter /execute endpoint actually accepts. The endpoint only
+// ships "python" and "javascript" kernels; aliases like "node"/"nodejs"/"js"
+// previously produced HTTP 500 (no such kernel), which also wrongly dropped the
+// still-alive sandbox.
+func normalizeLanguage(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "node", "nodejs", "js", "javascript":
+		return "javascript"
+	case "python", "py", "python3":
+		return "python"
+	}
+	return lang
+}
+
+// wrapJavaScript isolates every javascript execution inside a block statement.
+// The E2B javascript kernel persists global scope across /execute calls (unlike
+// its python kernel where reassignment is legal), so re-running a file that
+// does `const chalk = require(...)` blows up with `SyntaxError: Identifier 'x'
+// has already been declared` and the agent loops forever. A bare block `{}`
+// scopes `const`/`let` to that block (they would otherwise land in the kernel's
+// persistent global scope) without adding a top-level expression — an IIFE
+// (…)() broke the kernel's result extraction and its first call.
+func wrapJavaScript(code string) string {
+	return "{\n" + code + "\n}\n"
+}
+
 func (m *Manager) RunCode(ctx context.Context, chatID int64, code, language string) (*ExecutionResult, error) {
 	box := m.getSandbox(chatID)
 	if box == nil {
 		return nil, fmt.Errorf("No active sandbox. Create one first with e2b_sandbox_create.")
 	}
+	lang := normalizeLanguage(language)
+	if lang == "javascript" {
+		code = wrapJavaScript(code)
+	}
 	host := m.runtimeHost(box, jupyterPort)
-	payload := map[string]any{"code": code, "language": language}
+	payload := map[string]any{"code": code, "language": lang}
 	data, status, err := m.doJSON(ctx, http.MethodPost, host, "/execute", nil, payload, m.runtimeHeaders(box))
 	if err != nil {
 		m.drop(chatID)
 		return nil, fmt.Errorf("Sandbox mati atau timeout. Buat ulang dengan e2b_sandbox_create.")
 	}
 	if status >= 400 {
-		m.drop(chatID)
+		// 502 = gateway timeout, sandbox benar-benar mati → buang referensi.
+		// 4xx/5xx lain (mis. language kernel tidak dikenali) adalah masalah
+		// request, bukan kondisi sandbox → sandbox tetap hidup dan bisa dipakai
+		// ulang tanpa membuat instans baru.
 		if status == 502 {
+			m.drop(chatID)
 			return nil, fmt.Errorf("Sandbox timeout")
 		}
 		return nil, fmt.Errorf("e2b execute: HTTP %d", status)
