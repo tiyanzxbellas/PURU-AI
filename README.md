@@ -44,7 +44,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 | `/reset memory` | Hapus MEMORY.md (ingatan user) |
 | `/reset chat` | Hapus riwayat percakapan + file VFS |
 | `/skills` | Menampilkan daftar skill |
-| `/skills search <query>` | Mencari skill — GitHub code search (`filename:SKILL.md`) + ClawHub |
+| `/skills search <query>` | Mencari skill — GitHub code search (`filename:SKILL.md`) + ClawHub, hasil antar-registry di-interleave supaya keduanya muncul |
 | `/skills install <target>` | Install skill (GitHub `owner/repo[/path]` atau URL; ClawHub `clawhub:<slug>`) |
 | `/skills builtin [nama]` | Lihat / install skill bawaan (`weather`, `summarize`, `github`, `skill-creator`) |
 | `/skills info <nama>` | Menampilkan detail skill |

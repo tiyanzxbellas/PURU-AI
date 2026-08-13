@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
@@ -92,8 +94,15 @@ func NewRegistry(v *vfs.VFS, opts RegistryOptions) *Registry {
 }
 
 // SearchSkills searches every enabled registry (GitHub, ClawHub) concurrently
-// and merges results sorted by score. Requires GITHUB_TOKEN — GitHub's code
-// search API returns HTTP 401 "Requires authentication" without one.
+// and merges results. Requires GITHUB_TOKEN — GitHub's code search API returns
+// HTTP 401 "Requires authentication" without one.
+//
+// Merging is done per-registry, not via the upstream manager's single global
+// score-sorted merge: GitHub code search relevance scores sit around ~1.0 while
+// ClawHub returns scores in the thousands, so a global sort clamps out every
+// GitHub hit before the top-N cut. Instead each registry is queried with its
+// own quota (top-N split evenly) and results are interleaved round-robin so
+// every enabled registry is represented.
 func (r *Registry) SearchSkills(ctx context.Context, query string) ([]SearchResult, error) {
 	if r.manager == nil {
 		return nil, fmt.Errorf("registry tidak dikonfigurasi")
@@ -105,27 +114,156 @@ func (r *Registry) SearchSkills(ctx context.Context, query string) ([]SearchResu
 		return nil, fmt.Errorf("GITHUB_TOKEN belum diset di .env — GitHub code search membutuhkan token (lihat /skills)")
 	}
 
-	results, err := r.manager.SearchAll(ctx, strings.TrimSpace(query), maxSearchResult)
-	if err != nil {
-		return nil, err
+	regs := []string{}
+	if r.manager.GetRegistry("github") != nil {
+		regs = append(regs, "github")
 	}
-	out := make([]SearchResult, 0, len(results))
-	for _, res := range results {
+	if r.manager.GetRegistry("clawhub") != nil {
+		regs = append(regs, "clawhub")
+	}
+	if len(regs) == 0 {
+		return nil, fmt.Errorf("tidak ada registry yang aktif")
+	}
+
+	// Setiap registry mendapat porsi yang adil dari top-N.
+	perReg := maxSearchResult / len(regs)
+	if perReg < 1 {
+		perReg = 1
+	}
+
+	type regResult struct {
+		results []pcskills.SearchResult
+		err     error
+	}
+	resultsCh := make(chan regResult, len(regs))
+	var wg sync.WaitGroup
+	for _, name := range regs {
+		reg := r.manager.GetRegistry(name)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			results, err := reg.Search(sctx, query, perReg)
+			if err != nil {
+				resultsCh <- regResult{err: fmt.Errorf("%s: %w", name, err)}
+				return
+			}
+			resultsCh <- regResult{results: results}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	byReg := map[string][]pcskills.SearchResult{}
+	var firstErr error
+	for rr := range resultsCh {
+		if rr.err != nil {
+			if firstErr == nil {
+				firstErr = rr.err
+			}
+			continue
+		}
+		for _, res := range rr.results {
+			byReg[res.RegistryName] = append(byReg[res.RegistryName], res)
+		}
+	}
+
+	// Interleave hasil per registry (masing-masing sudah di-dedup slug) pakai
+	// round-robin supaya tiap registry aktif terwakili.
+	for name := range byReg {
+		sort.Slice(byReg[name], func(i, j int) bool {
+			if byReg[name][i].Score == byReg[name][j].Score {
+				return byReg[name][i].Slug < byReg[name][j].Slug
+			}
+			return byReg[name][i].Score > byReg[name][j].Score
+		})
+		byReg[name] = dedupSlugs(byReg[name])
+	}
+
+	interleaved := interleaveByRegistry(byReg, maxSearchResult)
+	var out []SearchResult
+	for _, item := range interleaved {
 		url := ""
-		if reg := r.manager.GetRegistry(res.RegistryName); reg != nil {
-			url = reg.SkillURL(res.Slug, res.Version)
+		if reg := r.manager.GetRegistry(item.RegistryName); reg != nil {
+			url = reg.SkillURL(item.Slug, item.Version)
 		}
 		out = append(out, SearchResult{
-			Score:        res.Score,
-			Slug:         res.Slug,
-			DisplayName:  res.DisplayName,
-			Summary:      res.Summary,
-			Version:      res.Version,
-			RegistryName: res.RegistryName,
+			Score:        item.Score,
+			Slug:         item.Slug,
+			DisplayName:  item.DisplayName,
+			Summary:      item.Summary,
+			Version:      item.Version,
+			RegistryName: item.RegistryName,
 			URL:          url,
 		})
 	}
+
+	// Jika seluruh registry gagal, laporkan error pertamanya.
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
 	return out, nil
+}
+
+// interleaveByRegistry menggabungkan hasil per-registry dengan round-robin:
+// satu item dari tiap registry bergantian sampai salah satu habis. Ini
+// menjamin setiap registry aktif terwakili tanpa membandingkan skor lintas
+// registry (skor GitHub ~1 vs ClawHub ribuan tidak sebanding).
+func interleaveByRegistry(byReg map[string][]pcskills.SearchResult, limit int) []pcskills.SearchResult {
+	type bucket struct {
+		name string
+		list []pcskills.SearchResult
+		pos  int
+	}
+	buckets := make([]*bucket, 0, len(byReg))
+	for name, results := range byReg {
+		buckets = append(buckets, &bucket{name: name, list: results})
+	}
+	var out []pcskills.SearchResult
+	seen := map[string]bool{}
+	for limit <= 0 || len(out) < limit {
+		progress := false
+		for _, b := range buckets {
+			for b.pos < len(b.list) {
+				item := b.list[b.pos]
+				b.pos++
+				key := b.name + ":" + item.Slug
+				if seen[key] {
+					continue // slug sudah tampil → lanjut ke item berikutnya di bucket ini
+				}
+				seen[key] = true
+				progress = true
+				out = append(out, item)
+				break
+			}
+			if limit > 0 && len(out) >= limit {
+				return out
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	return out
+}
+
+// dedupSlugs menghapus duplikat slug dalam satu registry. ClawHub memakai skor
+// yang sama (ribuan) untuk banyak entri sehingga slug bisa muncul berkali-kali;
+// GitHub sudah dedup sendiri di level picoclaw, tapi operasi ini idempotent.
+func dedupSlugs(results []pcskills.SearchResult) []pcskills.SearchResult {
+	out := make([]pcskills.SearchResult, 0, len(results))
+	seen := map[string]bool{}
+	for _, r := range results {
+		if seen[r.Slug] {
+			continue
+		}
+		seen[r.Slug] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 // InstallFromGitHub installs a GitHub skill (slug owner/repo[/subpath] or URL)

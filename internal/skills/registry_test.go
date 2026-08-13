@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	pcskills "github.com/sipeed/picoclaw/pkg/skills"
 )
 
 func TestListBuiltinSkills(t *testing.T) {
@@ -64,5 +66,84 @@ func TestInstallTargetsRejectedWithoutManager(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Fatal("expected an error message")
+	}
+}
+
+func pcResult(reg, slug string, score float64) pcskills.SearchResult {
+	return pcskills.SearchResult{Score: score, Slug: slug, DisplayName: slug, RegistryName: reg}
+}
+
+func TestInterleaveByRegistryKeepsEveryRegistry(t *testing.T) {
+	// Regresi: SearchAll picoclaw men-sort skor global, jadi GitHub (score ~1)
+	// selalu kalah dari ClawHub (score ribuan). Interleave harus menaruh hasil
+	// kedua registry secara bergantian.
+	by := map[string][]pcskills.SearchResult{
+		"github": {
+			pcResult("github", "acme/weatherapp", 1),
+			pcResult("github", "acme2/city", 0.8),
+		},
+		"clawhub": {
+			pcResult("clawhub", "weather", 6120),
+			pcResult("clawhub", "forecast", 5100),
+			pcResult("clawhub", "sky", 5000),
+		},
+	}
+	got := interleaveByRegistry(by, 0)
+	var gh, ch []string
+	for _, r := range got {
+		if r.RegistryName == "github" {
+			gh = append(gh, r.Slug)
+		} else {
+			ch = append(ch, r.Slug)
+		}
+	}
+	if len(gh) != 2 {
+		t.Fatalf("github harus 2 hasil, dapat %v", gh)
+	}
+	if len(ch) != 3 {
+		t.Fatalf("clawhub harus 3 hasil, dapat %v", ch)
+	}
+	// Kedua registry harus muncul di 2 posisi pertama (round-robin).
+	seen := map[string]bool{}
+	for _, r := range got[:2] {
+		seen[r.RegistryName] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("dua registry pertama harus beda registry, dapat %v", seen)
+	}
+}
+
+func TestInterleaveByRegistryRespectsLimit(t *testing.T) {
+	by := map[string][]pcskills.SearchResult{
+		"github": {
+			pcResult("github", "g1", 1),
+			pcResult("github", "g2", 1),
+			pcResult("github", "g3", 1),
+		},
+		"clawhub": {
+			pcResult("clawhub", "c1", 9000),
+			pcResult("clawhub", "c2", 9000),
+			pcResult("clawhub", "c3", 9000),
+		},
+	}
+	got := interleaveByRegistry(by, 4)
+	if len(got) != 4 {
+		t.Fatalf("limit 4 harus menghasilkan 4, dapat %d", len(got))
+	}
+}
+
+func TestInterleaveByRegistryDedupsWithinRegistry(t *testing.T) {
+	// ClawHub mengembalikan skor sama untuk banyak entri slug identik; duplikat
+	// dalam satu registry harus dibuang sendiri agar hasil tidak penuh "weather".
+	by := map[string][]pcskills.SearchResult{
+		"clawhub": {
+			pcResult("clawhub", "weather", 6120),
+			pcResult("clawhub", "weather", 6120),
+			pcResult("clawhub", "forecast", 5100),
+		},
+	}
+	got := interleaveByRegistry(by, 0)
+	if len(got) != 2 {
+		t.Fatalf("harus 2 hasil unik, dapat %d (%v)", len(got), got)
 	}
 }
