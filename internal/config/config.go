@@ -37,9 +37,6 @@ func Load() (*Config, error) {
 		{"PUBLIC_RTDB", os.Getenv("PUBLIC_RTDB")},
 		{"BOT_TOKEN", os.Getenv("BOT_TOKEN")},
 		{"E2B_APIKEY", os.Getenv("E2B_APIKEY")},
-		{"OPENAI_BASEURL", os.Getenv("OPENAI_BASEURL")},
-		{"OPENAI_APIKEY", os.Getenv("OPENAI_APIKEY")},
-		{"OPENAI_MODEL", os.Getenv("OPENAI_MODEL")},
 	}
 	var missing []string
 	for _, r := range required {
@@ -50,6 +47,11 @@ func Load() (*Config, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables:\n  - %s", strings.Join(missing, "\n  - "))
 	}
+
+	// Default AI config: HF Space endpoint with puru model.
+	const defaultBaseURL = "https://betatestervueui2-b.hf.space/v1"
+	const defaultAPIKey = "sk-843e3f05f05eacfe-55n2je-f2c2b844"
+	const defaultModel = "puru"
 
 	port, err := envInt("PORT", 3000)
 	if err != nil {
@@ -85,11 +87,15 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		TelegramBotToken:  os.Getenv("BOT_TOKEN"),
-		Hostname:          envString("HOSTNAME", "localhost"),
-		Port:              port,
-		PublicRTDB:        os.Getenv("PUBLIC_RTDB"),
-		AI:                AIConfig{BaseURL: os.Getenv("OPENAI_BASEURL"), APIKey: os.Getenv("OPENAI_APIKEY"), Model: os.Getenv("OPENAI_MODEL")},
+		TelegramBotToken: os.Getenv("BOT_TOKEN"),
+		Hostname:         envString("HOSTNAME", "localhost"),
+		Port:             port,
+		PublicRTDB:       os.Getenv("PUBLIC_RTDB"),
+		AI: AIConfig{
+			BaseURL: envString("OPENAI_BASEURL", defaultBaseURL),
+			APIKey:  envString("OPENAI_APIKEY", defaultAPIKey),
+			Model:   envString("OPENAI_MODEL", defaultModel),
+		},
 		E2BApiKey:         os.Getenv("E2B_APIKEY"),
 		E2BDomain:         os.Getenv("E2B_DOMAIN"),
 		E2BApiURL:         os.Getenv("E2B_API_URL"),

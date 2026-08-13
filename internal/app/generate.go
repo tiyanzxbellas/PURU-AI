@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
@@ -66,7 +67,7 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 	if err := a.tg.DeleteMessage(ctx, chatID, thID); err != nil {
 		log.Printf("[app] delete thinking message failed: %v", err)
 	}
-	a.maybeUpdateMemory(ctx, userID, saved)
+	a.maybeUpdateMemory(userID, saved)
 	return nil
 }
 
@@ -174,18 +175,37 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 	if err := a.tg.DeleteMessage(ctx, chatID, saveID); err != nil {
 		log.Printf("[app] delete save message failed: %v", err)
 	}
-	a.maybeUpdateMemory(ctx, userID, saved)
+	a.maybeUpdateMemory(userID, saved)
 	return nil
 }
 
 // ---------------------------------------------------------------------------
-// Memory auto-update trigger (runs after the reply is sent; errors are non-fatal)
+// Memory auto-update trigger (fire-and-forget)
 // ---------------------------------------------------------------------------
 
-func (a *App) maybeUpdateMemory(ctx context.Context, userID int64, msgs []*messages.Message) {
+// memoryUpdateTimeout bounds one background MEMORY.md rewrite so a slow memory
+// model can never pile up goroutines for the same user.
+const memoryUpdateTimeout = 60 * time.Second
+
+// maybeUpdateMemory kicks off a background MEMORY.md refresh. It runs after the
+// reply is sent and never holds the per-user busy guard, so a slow memory model
+// call does not block the user's next message. The caller no longer waits on it.
+func (a *App) maybeUpdateMemory(userID int64, msgs []*messages.Message) {
 	if a.mem == nil || a.cfg.MemoryUpdateEvery <= 0 {
 		return
 	}
+	go a.updateMemoryAsync(context.Background(), userID, msgs)
+}
+
+// updateMemoryAsync performs the actual rewrite. A per-user mutex serializes
+// overlapping refreshes so the turn counter and MEMORY.md stay consistent even
+// when the user keeps chatting while a previous update is still running.
+// Errors are non-fatal (log only), matching the old behaviour.
+func (a *App) updateMemoryAsync(ctx context.Context, userID int64, msgs []*messages.Message) {
+	mu := a.memMuFor(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	meta := a.hist.GetMeta(ctx, userID)
 	turns := meta.UserTurns + 1
 	_ = a.hist.SetMeta(ctx, userID, history.Meta{UserTurns: turns})
@@ -193,7 +213,9 @@ func (a *App) maybeUpdateMemory(ctx context.Context, userID int64, msgs []*messa
 	if turns%a.cfg.MemoryUpdateEvery != 0 {
 		return
 	}
-	if updated, err := a.mem.UpdateMemory(ctx, userID, msgs); err != nil {
+	mctx, cancel := context.WithTimeout(ctx, memoryUpdateTimeout)
+	defer cancel()
+	if updated, err := a.mem.UpdateMemory(mctx, userID, msgs); err != nil {
 		log.Printf("[memory] update failed: %v", err)
 	} else if updated != "" {
 		log.Printf("Memory updated for user %d (turn %d)", userID, turns)

@@ -122,6 +122,10 @@ type ProcessResult struct {
 	ResponseMessages []*messages.Message
 	TotalTokens      int
 	LastStepUsage    Usage
+	// LastFinishReason is the stop reason of the last model response (e.g.
+	// "stop", "tool_calls", "length"). Used for diagnostics: a natural stop
+	// ends with "stop", a step-limit abort surfaces agents.ErrNotFinished.
+	LastFinishReason string
 }
 
 // runResult is the outcome of a single executor run.
@@ -493,6 +497,14 @@ func (a *Agent) runOnce(ctx context.Context, system string, history []*messages.
 		lastFinishReason: ra.lastFinishReason,
 	}
 	steps := stepsFromValues(vals)
+	// Hard guard: executor limits ITERATIONS (Plan calls), not total tool steps.
+	// A model can return multiple tool calls per Plan → total steps can exceed maxSteps.
+	// If actual steps exceed the configured limit, treat it as step-limit hit so we
+	// return the step-limit hint and stop cleanly (tool executions already ran, but
+	// we don't feed more context to the model).
+	if len(steps) > maxSteps {
+		res.hitStepLimit = true
+	}
 	res.responseMessages = responseFromSteps(steps)
 
 	if errors.Is(runErr, agents.ErrNotFinished) {
@@ -562,9 +574,9 @@ retryLoop:
 				break retryLoop // fatal: retrying will not help
 			}
 		case run.hitStepLimit:
-			return makeResult(stepLimitHint, run.responseMessages, run.totalTokens, run.lastStepUsage)
+			return makeResult(stepLimitHint, run.responseMessages, run.totalTokens, run.lastStepUsage, run.lastFinishReason)
 		case strings.TrimSpace(run.finalText) != "":
-			return makeResult(run.finalText, run.responseMessages, run.totalTokens, run.lastStepUsage)
+			return makeResult(run.finalText, run.responseMessages, run.totalTokens, run.lastStepUsage, run.lastFinishReason)
 		default:
 			lastErr = errors.New("empty final message from AI")
 			log.Printf("[ai] attempt %d/%d empty final text (finish_reason=%q)", attempt, maxRetries, run.lastFinishReason)
@@ -594,11 +606,11 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func makeResult(text string, resp []*messages.Message, total int, usage Usage) *ProcessResult {
+func makeResult(text string, resp []*messages.Message, total int, usage Usage, finishReason string) *ProcessResult {
 	if strings.TrimSpace(text) == "" {
 		text = "Maaf, saya tidak bisa merespons saat ini."
 	}
-	return &ProcessResult{Text: text, ResponseMessages: resp, TotalTokens: total, LastStepUsage: usage}
+	return &ProcessResult{Text: text, ResponseMessages: resp, TotalTokens: total, LastStepUsage: usage, LastFinishReason: finishReason}
 }
 
 func errResult() *ProcessResult {

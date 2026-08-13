@@ -11,13 +11,17 @@
 //	go run ./cmd/cli                     # REPL interaktif
 //	go run ./cmd/cli -reset              # hapus history + VFS untuk chat id
 //	go run ./cmd/cli -chat 123 "halo"    # pilih chat id debug (default -777)
-//	go run ./cmd/cli -verbose "halo"     # tampilkan tool-call per langkah + token
+//	go run ./cmd/cli -verbose "halo"     # trace tool nyata + output penuh + token + finish_reason
+//	go run ./cmd/cli -json "halo"        # output JSON machine-readable (text/steps/usage)
+//	go run ./cmd/cli -dump ./out "halo"  # simpan transcript JSON per run (run-<unix>.json)
+//	go run ./cmd/cli -timeout 5m "halo"  # batas waktu proses sisi klien
 //	go run ./cmd/cli -save-files ./out "halo" # simpan file hasil send_file ke disk
 package main
 
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -25,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -57,6 +62,11 @@ type cliApp struct {
 	noMemory bool
 	verbose  bool
 	filesDir string
+	jsonOut  bool
+	dumpDir  string
+	timeout  time.Duration
+	memMu    sync.Mutex     // serializes background memory updates (single chat per process)
+	memWG    sync.WaitGroup // one-shot mode waits on pending memory updates before exit
 }
 
 func main() {
@@ -66,6 +76,9 @@ func main() {
 	verbose := flag.Bool("verbose", false, "tampilkan tool-call per langkah + token usage")
 	noMemory := flag.Bool("no-memory", false, "nonaktifkan auto-update MEMORY.md")
 	saveFiles := flag.String("save-files", "", "direktori untuk menyimpan file hasil send_file (default: hanya di-print)")
+	jsonOut := flag.Bool("json", false, "output satu objek JSON machine-readable ke stdout (text, steps, usage)")
+	dumpDir := flag.String("dump", "", "direktori untuk menyimpan transcript JSON per run (run-<unix>.json)")
+	timeoutDur := flag.Duration("timeout", 0, "batas waktu proses (klien), mis. 5m / 90s; default 0 = tidak dibatasi oleh CLI")
 	flag.Parse()
 
 	_ = godotenv.Load()
@@ -127,6 +140,9 @@ func main() {
 		noMemory: *noMemory,
 		verbose:  *verbose,
 		filesDir: *saveFiles,
+		jsonOut:  *jsonOut,
+		dumpDir:  *dumpDir,
+		timeout:  *timeoutDur,
 	}
 
 	ctx := context.Background()
@@ -142,13 +158,24 @@ func main() {
 	app.oneShot(ctx, strings.Join(flag.Args(), " "))
 }
 
-func (a *cliApp) oneShot(ctx context.Context, prompt string) {
-	res := a.process(ctx, prompt)
-	if a.verbose {
-		printSteps(res)
-		printUsage(res)
+func (a *cliApp) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if a.timeout <= 0 {
+		return ctx, func() {}
 	}
-	fmt.Println(strings.TrimSpace(res.Text))
+	return context.WithTimeout(ctx, a.timeout)
+}
+
+func (a *cliApp) oneShot(ctx context.Context, prompt string) {
+	cctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+	res := a.process(cctx, prompt)
+	a.printResult(res)
+	if !a.jsonOut {
+		fmt.Println(strings.TrimSpace(res.Text))
+	}
+	// One-shot exits after this call; wait so a pending background memory
+	// update (fire-and-forget) is persisted before the process terminates.
+	a.memWG.Wait()
 }
 
 func (a *cliApp) repl(ctx context.Context) {
@@ -174,13 +201,81 @@ func (a *cliApp) repl(ctx context.Context) {
 		if line == "" {
 			continue
 		}
-		res := a.process(ctx, line)
-		if a.verbose {
-			printSteps(res)
-			printUsage(res)
+		cctx, cancel := a.withTimeout(ctx)
+		res := a.process(cctx, line)
+		cancel()
+		a.printResult(res)
+		if !a.jsonOut {
+			fmt.Printf("\nPURU-AI > %s\n\n", strings.TrimSpace(res.Text))
 		}
-		fmt.Printf("\nPURU-AI > %s\n\n", strings.TrimSpace(res.Text))
 	}
+}
+
+// printResult emits the result in the requested mode: -json writes a single
+// machine-readable object to stdout; otherwise -verbose prints the step trace
+// and usage. -dump always writes run-<unix>.json to disk.
+func (a *cliApp) printResult(res *ai.ProcessResult) {
+	if a.dumpDir != "" {
+		if err := a.dumpRun(res); err != nil {
+			log.Printf("[cli] dump failed: %v", err)
+		}
+	}
+	if a.jsonOut {
+		out := struct {
+			Text         string    `json:"text"`
+			FinishReason string    `json:"finish_reason"`
+			Steps        []runStep `json:"steps,omitempty"`
+			InputTokens  int       `json:"input_tokens"`
+			OutputTokens int       `json:"output_tokens"`
+			TotalTokens  int       `json:"total_tokens"`
+			AccumTokens  int       `json:"accum_tokens"`
+		}{
+			Text:         res.Text,
+			FinishReason: res.LastFinishReason,
+			Steps:        collectSteps(res),
+			InputTokens:  res.LastStepUsage.InputTokens,
+			OutputTokens: res.LastStepUsage.OutputTokens,
+			TotalTokens:  res.LastStepUsage.TotalTokens,
+			AccumTokens:  res.TotalTokens,
+		}
+		b, _ := json.Marshal(out)
+		fmt.Println(string(b))
+		return
+	}
+	if a.verbose {
+		printSteps(res)
+		printUsage(res)
+	}
+}
+
+// dumpRun persists the full step trace of one run as run-<unix>.json for
+// external/factual comparison of what the agent actually executed.
+func (a *cliApp) dumpRun(res *ai.ProcessResult) error {
+	if err := os.MkdirAll(a.dumpDir, 0o755); err != nil {
+		return err
+	}
+	out := struct {
+		ChatID       int64     `json:"chat_id"`
+		Text         string    `json:"text"`
+		FinishReason string    `json:"finish_reason"`
+		Steps        []runStep `json:"steps"`
+		Usage        struct {
+			Input  int `json:"input"`
+			Output int `json:"output"`
+			Total  int `json:"total"`
+		} `json:"usage"`
+	}{ChatID: a.chatID, Text: res.Text, FinishReason: res.LastFinishReason, Steps: collectSteps(res)}
+	out.Usage.Input = res.LastStepUsage.InputTokens
+	out.Usage.Output = res.LastStepUsage.OutputTokens
+	out.Usage.Total = res.TotalTokens
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	// NOTE: Date.now()/time.Now() are fine here — this is CLI code running on a
+	// real machine (not a workflow script), so wall-clock time is available.
+	path := filepath.Join(a.dumpDir, fmt.Sprintf("run-%d.json", time.Now().Unix()))
+	return os.WriteFile(path, b, 0o644)
 }
 
 // process mirrors internal/app/generate.go processMessage: prune → cap →
@@ -218,23 +313,42 @@ func (a *cliApp) process(ctx context.Context, prompt string) *ai.ProcessResult {
 	_ = a.hist.SetHistory(ctx, a.chatID, saved)
 
 	if !a.noMemory {
-		a.maybeUpdateMemory(ctx, saved)
+		a.maybeUpdateMemory(saved)
 	}
 	return res
 }
 
-// maybeUpdateMemory replicates internal/app maybeUpdateMemory (non-fatal).
-func (a *cliApp) maybeUpdateMemory(ctx context.Context, msgs []*messages.Message) {
+// memoryUpdateTimeout bounds one background MEMORY.md rewrite (mirrors
+// internal/app). A slow memory model must not block the CLI prompt.
+const memoryUpdateTimeout = 60 * time.Second
+
+// maybeUpdateMemory kicks off a background MEMORY.md refresh. Fire-and-forget so
+// the next REPL prompt is never delayed by the memory model call. Mirrors
+// internal/app maybeUpdateMemory; errors are non-fatal.
+func (a *cliApp) maybeUpdateMemory(msgs []*messages.Message) {
 	if a.mem == nil || a.cfg.MemoryUpdateEvery <= 0 {
 		return
 	}
+	a.memWG.Add(1)
+	go func() {
+		defer a.memWG.Done()
+		a.updateMemoryAsync(context.Background(), msgs)
+	}()
+}
+
+func (a *cliApp) updateMemoryAsync(ctx context.Context, msgs []*messages.Message) {
+	a.memMu.Lock()
+	defer a.memMu.Unlock()
+
 	meta := a.hist.GetMeta(ctx, a.chatID)
 	turns := meta.UserTurns + 1
 	_ = a.hist.SetMeta(ctx, a.chatID, history.Meta{UserTurns: turns})
 	if turns%a.cfg.MemoryUpdateEvery != 0 {
 		return
 	}
-	if updated, err := a.mem.UpdateMemory(ctx, a.chatID, msgs); err != nil {
+	mctx, cancel := context.WithTimeout(ctx, memoryUpdateTimeout)
+	defer cancel()
+	if updated, err := a.mem.UpdateMemory(mctx, a.chatID, msgs); err != nil {
 		log.Printf("[cli] memory update failed: %v", err)
 	} else if updated != "" {
 		log.Printf("[cli] memory updated for chat %d (turn %d)", a.chatID, turns)
@@ -280,41 +394,111 @@ func (s *fileSink) write(filename, caption string, data []byte) error {
 // verbose diagnostics
 // ---------------------------------------------------------------------------
 
-func printSteps(res *ai.ProcessResult) {
+// maxResultLen bounds how much of a tool result is echoed to the terminal.
+// 4000 chars keeps long SSE/JSON results readable while stopping a 1MB crawl
+// output from flooding the console.
+const maxResultLen = 4000
+
+// runStep is a single recorded tool execution for -json / -dump output.
+type runStep struct {
+	Tool        string `json:"tool"`
+	ToolCallID  string `json:"tool_call_id,omitempty"`
+	Args        any    `json:"args"`
+	Result      string `json:"result"`
+	ResultError bool   `json:"result_error,omitempty"`
+}
+
+// collectSteps extracts the actually-executed tool calls (assistant parts of
+// type "tool-call") paired with their results (tool parts of type
+// "tool-result") from the persisted ResponseMessages. This is the ground truth
+// for what the agent really ran — distinct from any tool the model only claims
+// to have used in its reply text.
+func collectSteps(res *ai.ProcessResult) []runStep {
+	if res == nil {
+		return nil
+	}
+	var steps []runStep
+	results := map[string]string{}
+	errs := map[string]bool{}
 	for _, m := range res.ResponseMessages {
-		if m == nil {
+		if m == nil || !messages.IsParts(m) {
 			continue
 		}
-		if m.Role == "assistant" && messages.IsParts(m) {
-			for _, p := range messages.ContentParts(m) {
-				if p.Type() != "tool-call" {
-					continue
-				}
-				fmt.Printf("  🛠 tool-call: %s(%s) args=%s\n", p.Str("toolName"), p.Str("toolCallId"), shortText(string(p["input"])))
+		for _, p := range messages.ContentParts(m) {
+			switch p.Type() {
+			case "tool-call":
+				steps = append(steps, runStep{
+					Tool:       p.Str("toolName"),
+					ToolCallID: p.Str("toolCallId"),
+					Args:       rawArgs(p["input"]),
+				})
+			case "tool-result":
+				id := p.Str("toolCallId")
+				results[id] = trimTo(string(p["output"]), maxResultLen)
+				errs[id] = strings.Contains(p.Str("output"), `"error"`)
 			}
 		}
-		if m.Role == "tool" && messages.IsParts(m) {
-			for _, p := range messages.ContentParts(m) {
-				if p.Type() != "tool-result" {
-					continue
+	}
+	// Pair each step with its result (tool-result parts follow their tool-call
+	// in responseMessages, so the last write wins; missing id → empty).
+	for i := range steps {
+		if r, ok := results[steps[i].ToolCallID]; ok {
+			steps[i].Result = r
+			steps[i].ResultError = errs[steps[i].ToolCallID]
+		}
+	}
+	return steps
+}
+
+// rawArgs decodes a tool-call input JSON into an any (map) for stable JSON
+// output; falls back to the raw string when it is not valid JSON.
+func rawArgs(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		return v
+	}
+	return string(raw)
+}
+
+func printSteps(res *ai.ProcessResult) {
+	steps := collectSteps(res)
+	for i, s := range steps {
+		mark := "✅"
+		if s.ResultError {
+			mark = "⚠️"
+		}
+		argsShort := s.Args
+		if m, ok := s.Args.(map[string]any); ok {
+			// compact long values inside args for the terminal trace
+			for k, v := range m {
+				if str, ok := v.(string); ok && len(str) > 120 {
+					m[k] = str[:120] + "…"
 				}
-				fmt.Printf("  ↩ tool-result: %s → %s\n", p.Str("toolName"), shortText(string(p["output"])))
 			}
+			argsShort = m
+		}
+		ab, _ := json.Marshal(argsShort)
+		fmt.Printf("  %s step %d: %s(%s) args=%s\n", mark, i+1, s.Tool, s.ToolCallID, string(ab))
+		if s.Result != "" {
+			fmt.Printf("    → %s\n", s.Result)
 		}
 	}
 }
 
 func printUsage(res *ai.ProcessResult) {
 	u := res.LastStepUsage
-	fmt.Printf("  📊 tokens: input=%d output=%d total=%d (acum=%d)\n", u.InputTokens, u.OutputTokens, u.TotalTokens, res.TotalTokens)
+	fmt.Printf("  📊 tokens: input=%d output=%d total=%d (acum=%d) finish_reason=%q\n", u.InputTokens, u.OutputTokens, u.TotalTokens, res.TotalTokens, res.LastFinishReason)
 }
 
-func shortText(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if len(raw) > 220 {
-		return raw[:220] + "…"
+func trimTo(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max] + "…(truncated)"
 	}
-	return raw
+	return s
 }
 
 // ---------------------------------------------------------------------------

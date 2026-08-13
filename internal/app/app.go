@@ -41,6 +41,7 @@ type App struct {
 	registry *skills.Registry
 	Settings *settings.Manager
 	busy     sync.Map // set of user IDs with an in-flight request
+	memMu    sync.Map // per-user mutex serializing background memory updates
 }
 
 func New(cfg *config.Config, tg *telegram.API, h *history.Store, v *vfs.VFS, a *ai.Agent, m *memory.Manager, c *skills.Catalog, r *skills.Registry) *App {
@@ -60,6 +61,13 @@ func (a *App) tryAcquire(userID int64) bool {
 
 func (a *App) release(userID int64) {
 	a.busy.Delete(userID)
+}
+
+// memMuFor returns the per-user mutex serializing background memory updates so
+// two memory refreshes for the same user can never race on meta/counter.
+func (a *App) memMuFor(userID int64) *sync.Mutex {
+	v, _ := a.memMu.LoadOrStore(userID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // Handle dispatches one Telegram update. Processing runs in a goroutine so

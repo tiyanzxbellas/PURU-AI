@@ -1,7 +1,6 @@
 // Package memory auto-updates /memory/MEMORY.md via an internal model call.
 // The memory stays minimal: max 5 numbered important points plus a short
-// "current topic" section; obsolete/irrelevant entries are dropped. The model
-// is langchaingo's OpenAI-compatible client (streaming, SSE-tolerant).
+// "current topic" section; obsolete/irrelevant entries are dropped.
 package memory
 
 import (
@@ -100,7 +99,7 @@ func (m *Manager) UpdateMemory(ctx context.Context, chatID int64, recent []*mess
 			Parts: []llms.ContentPart{llms.TextContent{Text: memoryPrompt}},
 		},
 		{
-			Role:  llms.ChatMessageTypeHuman,
+			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextContent{
 				Text: "memory/MEMORY.md lama:\n" + current + "\n\nPercakapan terakhir:\n" + historyText,
 			}},

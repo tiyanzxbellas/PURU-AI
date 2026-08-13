@@ -120,11 +120,8 @@ go run .
 | `BOT_TOKEN` | Token bot Telegram |
 | `PUBLIC_RTDB` | Base URL Firebase Realtime Database |
 | `E2B_APIKEY` | API key E2B untuk eksekusi kode |
-| `OPENAI_BASEURL` | Base URL API OpenAI-compatible |
-| `OPENAI_APIKEY` | API key |
-| `OPENAI_MODEL` | Nama model |
 
-Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kurang.
+Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kurang.
 
 ### Variabel Opsional
 
@@ -138,6 +135,9 @@ Semua variable di atas **wajib**. Aplikasi akan keluar dengan error jika ada yan
 | `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
 | `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
+| `OPENAI_BASEURL` | `https://betatestervueui2-b.hf.space/v1` | Base URL API OpenAI-compatible (bila kosong dipakai default) |
+| `OPENAI_APIKEY` | `sk-843e3f05f05eacfe-55n2je-f2c2b844` | API key (bila kosong dipakai default) |
+| `OPENAI_MODEL` | `puru` | Nama model (bila kosong dipakai default) |
 | `E2B_TEMPLATE` | `code-interpreter-v1` | Template sandbox E2B untuk eksekusi kode (template `default` sudah dihapus dari platform E2B) |
 | `GITHUB_TOKEN` | *(kosong)* | Token GitHub untuk `/skills search`. **Wajib** — GitHub code search API menolak tanpa token (HTTP 401) |
 | `CLAWHUB_APIKEY` | *(kosong)* | Token ClawHub (opsional). Registry ClawHub aktif bila diisi (base URL default `https://clawhub.ai`) |
@@ -161,7 +161,10 @@ Opsi:
 |------|-----------|
 | `-chat <id>` | Chat/user id debug (default `-777`, terpisah dari user publik) |
 | `-reset` | Hapus history + VFS untuk chat id lalu exit |
-| `-verbose` | Tampilkan tool-call per langkah + token usage |
+| `-verbose` | Tampilkan trace tool yang benar-benar tereksekusi (tool-call + output result penuh) + token usage + `finish_reason` |
+| `-json` | Output satu objek JSON machine-readable ke stdout (`text`, `steps`, `usage`) — untuk parsing/CI; jawaban tidak dicetak terpisah |
+| `-dump <dir>` | Simpan transcript JSON per run (`run-<unix>.json`: text + steps + usage) untuk pembanding faktual apa yang agent eksekusi |
+| `-timeout <dur>` | Batas waktu proses di sisi klien (mis. `5m`, `90s`); default 0 = tidak dibatasi CLI (batas internal agent `MAX_LOOP`/5 menit tetap berlaku) |
 | `-save-files <dir>` | Simpan file hasil `send_file` ke direktori (default: hanya di-print) |
 | `-no-memory` | Nonaktifkan auto-update MEMORY.md |
 
