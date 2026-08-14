@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
+	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
@@ -100,7 +103,7 @@ func newWebEnv(t *testing.T) *webEnv {
 	v := vfs.New(fb)
 	cat := skills.NewCatalog(v)
 	reg := skills.NewRegistry(v, skills.RegistryOptions{})
-	mux := NewMux(am, sm, cat, reg)
+	mux := NewMux(config.AIConfig{}, http.DefaultClient, am, sm, cat, reg)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &webEnv{am: am, sm: sm, cat: cat, reg: reg, vfs: v, srv: srv}
@@ -152,6 +155,46 @@ func TestLoginPageRequiresAuth(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Fatalf("content-type = %q, want text/html", ct)
+	}
+}
+
+func TestLoginPageServesBundleAssets(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 123, "pw-saya")
+	base := env.srv.URL + "/login/123/pw-saya"
+
+	// The built index.html must reference relative ./assets/... files.
+	resp, err := http.Get(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("page got %d, want 200", resp.StatusCode)
+	}
+	html := string(body)
+	if !strings.Contains(html, "id=\"root\"") {
+		t.Fatal("index.html does not look like the React bundle (missing #root)")
+	}
+	m := regexp.MustCompile(`src="\./assets/([^"]+\.js)"`).FindStringSubmatch(html)
+	if len(m) != 2 {
+		t.Fatalf("no relative ./assets js found in index.html:\n%s", html)
+	}
+	// The asset must be served (with correct content-type) under the login path.
+	aresp, err := http.Get(base + "/assets/" + m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aresp.Body.Close()
+	if aresp.StatusCode != http.StatusOK {
+		t.Fatalf("asset %s got %d, want 200", m[1], aresp.StatusCode)
+	}
+	if ct := aresp.Header.Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("asset content-type = %q, want javascript", ct)
 	}
 }
 
@@ -243,6 +286,70 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 	resp.Body.Close()
 	if after.HasKey {
 		t.Fatal("key still present after clear")
+	}
+}
+
+func TestAPIModels(t *testing.T) {
+	// Fake OpenAI-compatible /models endpoint.
+	modelsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"bad key"}`))
+			return
+		}
+		w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"puru"}]}`))
+	}))
+	t.Cleanup(modelsSrv.Close)
+
+	env := newWebEnv(t)
+	setupAuth(t, env, 7, "pw")
+	base := env.srv.URL + "/login/7/pw/api"
+
+	// no base URL configured -> 502 with a clear error
+	resp, err := http.Get(base + "/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fail struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&fail); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || fail.Error == "" {
+		t.Fatalf("expected 502 + error, got %d %+v", resp.StatusCode, fail)
+	}
+
+	// configure base URL + key, then list models
+	cfg := &settings.Config{}
+	u := modelsSrv.URL
+	key := "sk-test"
+	cfg.BaseURL = &u
+	cfg.APIKey = &key
+	if err := env.sm.Set(context.Background(), 7, cfg); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.Get(base + "/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		OK     bool     `json:"ok"`
+		Models []string `json:"models"`
+		Base   string   `json:"baseUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !d.OK || len(d.Models) != 3 || d.Models[0] != "gpt-4o" || d.Base != modelsSrv.URL {
+		t.Fatalf("unexpected models response: %+v", d)
 	}
 }
 

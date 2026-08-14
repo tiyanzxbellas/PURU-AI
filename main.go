@@ -91,7 +91,7 @@ func main() {
 	appSvc.Auth = authSvc
 
 	// Health + web settings server (bind failures are non-fatal for the bot).
-	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc)
+	srv := web.Serve(cfg, hc, authSvc, settingsSvc, catalogSvc, registrySvc)
 	go func() {
 		if lerr := srv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			log.Printf("web server: %v", lerr)

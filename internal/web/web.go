@@ -4,10 +4,16 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,25 +24,29 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 )
 
-//go:embed static/*
-var staticFS embed.FS
+//go:embed all:dist
+var distFS embed.FS
 
 // Serve returns an http.Server that mounts the health check on "/" (preserving
 // the existing JSON contract) and the settings page + API under /login/{id}/{pw}.
-func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) *http.Server {
+func Serve(cfg *config.Config, hc *http.Client, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) *http.Server {
 	srv := &http.Server{
 		Addr:    cfg.Hostname + ":" + itoa(cfg.Port),
-		Handler: NewMux(am, sm, cat, reg),
+		Handler: NewMux(cfg.AI, hc, am, sm, cat, reg),
 	}
 	return srv
 }
 
 // NewMux builds the HTTP handler with the health check, the login page and the
 // settings API. Exposed separately so tests can exercise the routes directly.
-func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) http.Handler {
+func NewMux(globalAI config.AIConfig, hc *http.Client, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) http.Handler {
 	mux := http.NewServeMux()
+	sub, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		panic(fmt.Sprintf("web: embed dist: %v", err))
+	}
 
-	// Health check — identical JSON so existing probes still pass.
+	// Health check - identical JSON so existing probes still pass.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/health" {
 			http.NotFound(w, r)
@@ -65,6 +75,8 @@ func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *sk
 			apiConfigHandler(am, sm)(w, r)
 		case "/api/config/clear":
 			apiConfigClearHandler(am, sm)(w, r)
+		case "/api/models":
+			apiModelsHandler(am, sm, globalAI, hc)(w, r)
 		case "/api/skills/list":
 			apiSkillsListHandler(am, cat)(w, r)
 		case "/api/skills/search":
@@ -74,7 +86,7 @@ func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *sk
 		case "/api/skills/delete":
 			apiSkillsDeleteHandler(am, cat)(w, r)
 		default:
-			loginHandler(am)(w, r)
+			loginHandler(am, sub)(w, r)
 		}
 	})
 
@@ -150,7 +162,7 @@ func resolveAuth(r *http.Request, am *auth.Manager) (int64, bool) {
 // login page handler
 // ---------------------------------------------------------------------------
 
-func loginHandler(am *auth.Manager) http.HandlerFunc {
+func loginHandler(am *auth.Manager, dist fs.FS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, pw := extractIDPW(r.URL.Path, "/login")
 		if id == 0 || pw == "" {
@@ -160,15 +172,30 @@ func loginHandler(am *auth.Manager) http.HandlerFunc {
 		if !am.Verify(r.Context(), id, pw) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Access Denied</title></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#e2e8f0"><h1>401 — Akses Ditolak</h1><p>Password salah atau tidak valid.</p></body></html>`)
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Access Denied</title></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#e2e8f0"><h1>401 - Akses Ditolak</h1><p>Password salah atau tidak valid.</p></body></html>`)
 			return
 		}
-		data, err := staticFS.ReadFile("static/index.html")
+		prefix := fmt.Sprintf("/login/%d/%s", id, pw)
+		rel := strings.TrimPrefix(r.URL.Path, prefix)
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" || !strings.Contains(filepath.Base(rel), ".") {
+			rel = "index.html"
+		}
+		data, err := fs.ReadFile(dist, rel)
 		if err != nil {
-			http.Error(w, "Page not found", http.StatusInternalServerError)
+			if rel != "index.html" {
+				if idx, e2 := fs.ReadFile(dist, "index.html"); e2 == nil {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Write(idx)
+					return
+				}
+			}
+			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if ct := mime.TypeByExtension(filepath.Ext(rel)); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
 		w.Write(data)
 	}
 }
@@ -264,6 +291,79 @@ func apiConfigClearHandler(am *auth.Manager, sm *settings.Manager) http.HandlerF
 		}
 		jsonOK(w, map[string]any{"ok": true})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// API: models
+// ---------------------------------------------------------------------------
+
+func apiModelsHandler(am *auth.Manager, sm *settings.Manager, global config.AIConfig, hc *http.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		eff := settings.Effective(global, sm.Get(r.Context(), id))
+		ids, err := fetchModels(r.Context(), eff, hc)
+		if err != nil {
+			jsonErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "models": ids, "baseUrl": eff.BaseURL})
+	}
+}
+
+// fetchModels queries the provider's OpenAI-compatible GET /models endpoint for
+// the effective (global + user override) API config.
+func fetchModels(ctx context.Context, aiCfg config.AIConfig, hc *http.Client) ([]string, error) {
+	if strings.TrimSpace(aiCfg.BaseURL) == "" {
+		return nil, errors.New("Base URL belum diset")
+	}
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(aiCfg.BaseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if aiCfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("API models HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode daftar model: %w", err)
+	}
+	var ids []string
+	for _, m := range payload.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, errors.New("API tidak mengembalikan daftar model")
+	}
+	return ids, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -112,6 +112,49 @@ func Load() (*Config, error) {
 	}, nil
 }
 
+// PublicBaseURL resolves the externally reachable base URL used to build
+// /login links. Resolution order:
+//
+//  1. Explicit PUBLIC_BASE_URL.
+//  2. Known PaaS-provided URLs (Render, Koyeb, Railway, Fly.io, Heroku) so
+//     /login works out of the box without setting PUBLIC_BASE_URL.
+//  3. Fallback http://{HOSTNAME}:{PORT} — only when HOSTNAME is a real
+//     address. Bind-all values (0.0.0.0, ::, [::], empty) return "" because
+//     they are not reachable from outside the platform network.
+//
+// Returns "" when no public URL can be determined.
+func (c *Config) ResolvePublicBaseURL() string {
+	if c.PublicBaseURL != "" {
+		return strings.TrimRight(c.PublicBaseURL, "/")
+	}
+	if v := os.Getenv("RENDER_EXTERNAL_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := os.Getenv("KOYEB_PUBLIC_DOMAIN"); v != "" {
+		return "https://" + v
+	}
+	if v := os.Getenv("KOYEB_SERVICE_DOMAIN"); v != "" {
+		return "https://" + v
+	}
+	if v := os.Getenv("KOYEB_APP_DOMAIN"); v != "" {
+		return "https://" + v
+	}
+	if v := os.Getenv("RAILWAY_PUBLIC_DOMAIN"); v != "" {
+		return "https://" + v
+	}
+	if v := os.Getenv("FLY_APP_NAME"); v != "" {
+		return "https://" + v + ".fly.dev"
+	}
+	if v := os.Getenv("HEROKU_APP_NAME"); v != "" {
+		return "https://" + v + ".herokuapp.com"
+	}
+	switch c.Hostname {
+	case "", "0.0.0.0", "::", "[::]":
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d", c.Hostname, c.Port)
+}
+
 func envString(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

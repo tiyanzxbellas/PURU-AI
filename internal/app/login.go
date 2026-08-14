@@ -21,9 +21,9 @@ func (a *App) cmdLogin(ctx context.Context, msg *telegram.Message) error {
 	}
 
 	pw := a.Auth.Get(ctx, userID)
-	baseURL := a.cfg.PublicBaseURL
+	baseURL := a.cfg.ResolvePublicBaseURL()
 	if baseURL == "" {
-		baseURL = fmt.Sprintf("http://%s:%d", a.cfg.Hostname, a.cfg.Port)
+		return a.safeReply(ctx, msg, "Link login tidak bisa dibuat otomatis di platform ini.\n\nSet environment `PUBLIC_BASE_URL` (mis. `https://bot.example.com`), restart bot, lalu ketik `/login` lagi.", true)
 	}
 	link := strings.TrimRight(baseURL, "/") + fmt.Sprintf("/login/%d/%s", userID, pw)
 

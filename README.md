@@ -17,7 +17,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Kegagalan balasan AI (toolset build, model tidak tersedia, respon kosong) selalu ditulis ke log dengan prefix `[ai]` (per-attempt + `finish_reason` + alasan akhir) supaya fallback "Maaf, saya tidak bisa merespons saat ini." mudah ditelusuri penyebabnya
 - **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-tool 2 menit; loop & context tool dijaga langchaingo executor (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse; semua teks keluar di-sanitasi jadi valid UTF-8 (`strings.ToValidUTF8`) agar tidak kena `400 text must be encoded in UTF-8`
-- **Per-user API Config via Web** — `/pw <password>` lalu `/login` untuk link halaman pengaturan web mobile-friendly (`/login/{id}/{pw}`). Di sana user bisa set base URL/API key/model sendiri, inject **system prompt / role** (di-append ke system prompt bawaan), dan mengelola skills (list/search/install/delete). Partial override global via `settings.Effective`; resolusi client per request sehingga aman paralel
+- **Per-user API Config via Web** — `/pw <password>` lalu `/login` untuk link halaman pengaturan web mobile-friendly (`/login/{id}/{pw}`), dibangun dengan **Vite + React** (hasil bundle di-embed ke binary Go). Halaman dipisah jadi section API Config / Model / Skills dengan **hamburger drawer**. Di sana user bisa set base URL/API key/model sendiri (**Load Models** menampilkan dropdown daftar model dari `GET {baseUrl}/models` provider OpenAI-compatible), inject **system prompt / role** (di-append ke system prompt bawaan), dan mengelola skills (list/search/install/delete). Partial override global via `settings.Effective`; resolusi client per request sehingga aman paralel
 - **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
 
 > ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`), dan password login web juga **plaintext** di `auth/<id>` (diperlukan karena link `/login/{id}/{pw}` memakai nilai mentahnya). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
@@ -96,7 +96,13 @@ cd telegram-ai-bot
 cp .env.example .env
 ```
 
-3. Jalankan:
+3. (Opsional, jika `internal/web/dist/` belum ada) build halaman web Vite + React:
+```
+cd web && npm install && npm run build && cd ..
+```
+Hasil bundle di-embed ke binary Go (`go:embed all:dist` di `internal/web/web.go`).
+
+4. Jalankan:
 ```
 go run .
 ```
@@ -117,7 +123,7 @@ Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kura
 |----------|---------|-----------|
 | `HOSTNAME` | `localhost` | Alamat bind web/health server |
 | `PORT` | `3000` | Port web/health server |
-| `PUBLIC_BASE_URL` | *(kosong)* | URL publik untuk link halaman `/login/{id}/{pw}` (mis. `https://bot.example.com`). Bila kosong, `/login` fallback ke `http://{hostname}:{port}` (tak bisa diakses publik) |
+| `PUBLIC_BASE_URL` | *(kosong)* | URL publik untuk link halaman `/login/{id}/{pw}` (mis. `https://bot.example.com`). Bila kosong, bot otomatis mendeteksi URL publik dari env platform (Render `RENDER_EXTERNAL_URL`, Koyeb `KOYEB_*_DOMAIN`, Railway `RAILWAY_PUBLIC_DOMAIN`, Fly.io `FLY_APP_NAME`, Heroku `HEROKU_APP_NAME`), lalu fallback ke `http://{hostname}:{port}`. Hostname bind-all (`0.0.0.0`/`::`) tidak dipakai sebagai host publik — `/login` meminta set `PUBLIC_BASE_URL` bila tak bisa ditentukan |
 | `TEMPERATURE` | `0` | Temperature model AI |
 | `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
 | `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |
@@ -162,7 +168,7 @@ bertahan antar-run.
 
 ## Docker
 
-Build dan jalankan dengan Docker:
+Build dan jalankan dengan Docker (frontend Vite + React otomatis di-build di stage `web-build`, lalu bundle-nya di-embed ke binary Go):
 ```bash
 docker build -t puru-ai .
 docker run -d --env-file .env -p 3000:3000 puru-ai

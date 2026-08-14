@@ -1,5 +1,8 @@
 node_modules/
-dist/
+/dist/
+.env
+picoclaw/
+.claude
 .env
 picoclaw/
 .claude
