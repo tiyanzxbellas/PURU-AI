@@ -118,11 +118,12 @@ func Load() (*Config, error) {
 //  1. Explicit PUBLIC_BASE_URL.
 //  2. Known PaaS-provided URLs (Render, Koyeb, Railway, Fly.io, Heroku) so
 //     /login works out of the box without setting PUBLIC_BASE_URL.
-//  3. Fallback http://{HOSTNAME}:{PORT} — only when HOSTNAME is a real
-//     address. Bind-all values (0.0.0.0, ::, [::], empty) return "" because
-//     they are not reachable from outside the platform network.
+//  3. Fallback http://{HOSTNAME}:{PORT} when HOSTNAME is a real address.
+//  4. http://localhost:{PORT} as the final default when PUBLIC_BASE_URL is
+//     not set (bind-all HOSTNAME values like 0.0.0.0 are not usable as a
+//     public host, so it defaults to localhost instead of an empty link).
 //
-// Returns "" when no public URL can be determined.
+// Never returns "".
 func (c *Config) ResolvePublicBaseURL() string {
 	if c.PublicBaseURL != "" {
 		return strings.TrimRight(c.PublicBaseURL, "/")
@@ -150,7 +151,9 @@ func (c *Config) ResolvePublicBaseURL() string {
 	}
 	switch c.Hostname {
 	case "", "0.0.0.0", "::", "[::]":
-		return ""
+		// Hostname bind-all tidak bisa dipakai sebagai host publik; default
+		// ke localhost supaya /login selalu menghasilkan link yang sah.
+		return fmt.Sprintf("http://localhost:%d", c.Port)
 	}
 	return fmt.Sprintf("http://%s:%d", c.Hostname, c.Port)
 }

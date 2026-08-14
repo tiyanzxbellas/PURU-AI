@@ -123,7 +123,7 @@ Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kura
 |----------|---------|-----------|
 | `HOSTNAME` | `localhost` | Alamat bind web/health server |
 | `PORT` | `3000` | Port web/health server |
-| `PUBLIC_BASE_URL` | *(kosong)* | URL publik untuk link halaman `/login/{id}/{pw}` (mis. `https://bot.example.com`). Bila kosong, bot otomatis mendeteksi URL publik dari env platform (Render `RENDER_EXTERNAL_URL`, Koyeb `KOYEB_*_DOMAIN`, Railway `RAILWAY_PUBLIC_DOMAIN`, Fly.io `FLY_APP_NAME`, Heroku `HEROKU_APP_NAME`), lalu fallback ke `http://{hostname}:{port}`. Hostname bind-all (`0.0.0.0`/`::`) tidak dipakai sebagai host publik — `/login` meminta set `PUBLIC_BASE_URL` bila tak bisa ditentukan |
+| `PUBLIC_BASE_URL` | *(kosong)* | URL publik untuk link halaman `/login/{id}/{pw}` (mis. `https://bot.example.com`). Bila kosong, bot otomatis mendeteksi URL publik dari env platform (Render `RENDER_EXTERNAL_URL`, Koyeb `KOYEB_*_DOMAIN`, Railway `RAILWAY_PUBLIC_DOMAIN`, Fly.io `FLY_APP_NAME`, Heroku `HEROKU_APP_NAME`), lalu fallback ke `http://{hostname}:{port}` bila hostname asli. Hostname bind-all (`0.0.0.0`/`::`) tidak dipakai sebagai host publik dan default ke `http://localhost:{port}` — `/login` tidak pernah menghasilkan link kosong |
 | `TEMPERATURE` | `0` | Temperature model AI |
 | `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
 | `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |

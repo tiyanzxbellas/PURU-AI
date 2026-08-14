@@ -26,9 +26,9 @@ func TestPublicBaseURL(t *testing.T) {
 		{"railway", Config{Hostname: "0.0.0.0", Port: 3000}, map[string]string{"RAILWAY_PUBLIC_DOMAIN": "puru.up.railway.app"}, "https://puru.up.railway.app"},
 		{"fly", Config{Hostname: "0.0.0.0", Port: 3000}, map[string]string{"FLY_APP_NAME": "puru"}, "https://puru.fly.dev"},
 		{"heroku", Config{Hostname: "0.0.0.0", Port: 3000}, map[string]string{"HEROKU_APP_NAME": "puru"}, "https://puru.herokuapp.com"},
-		{"bind-all host, no platform env", Config{Hostname: "0.0.0.0", Port: 3000}, nil, ""},
-		{"ipv6 bind-all host", Config{Hostname: "::", Port: 3000}, nil, ""},
-		{"empty host", Config{Hostname: "", Port: 3000}, nil, ""},
+		{"bind-all host, no platform env defaults to localhost", Config{Hostname: "0.0.0.0", Port: 3000}, nil, "http://localhost:3000"},
+		{"ipv6 bind-all host defaults to localhost", Config{Hostname: "::", Port: 3000}, nil, "http://localhost:3000"},
+		{"empty host defaults to localhost", Config{Hostname: "", Port: 3000}, nil, "http://localhost:3000"},
 		{"localhost fallback", Config{Hostname: "localhost", Port: 3000}, nil, "http://localhost:3000"},
 		{"real host fallback", Config{Hostname: "puru.local", Port: 8080}, nil, "http://puru.local:8080"},
 	}
