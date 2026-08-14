@@ -13,9 +13,6 @@ textarea{min-height:80px;resize:vertical}
 .skill-item{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #0f172a;font-size:.85rem}
 .skill-name{font-weight:600;color:#e2e8f0}
 .skill-desc{font-size:.78rem;color:#64748b}
-.msg{padding:8px 10px;border-radius:6px;font-size:.82rem;margin:8px 0}
-.msg-ok{background:#064e3b;color:#34d399}
-.msg-err{background:#7f1d1d;color:#fca5a5}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid #e2e8f0;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .search-row{display:flex;gap:6px}
@@ -36,3 +33,15 @@ textarea{min-height:80px;resize:vertical}
 .model-row{display:flex;gap:6px;align-items:center}
 .model-row .btn{white-space:nowrap;margin:0}
 .install-bar{position:fixed;top:0;left:0;right:0;background:#1e293b;padding:10px;border-bottom:1px solid #334155;z-index:10;text-align:center;font-size:.9rem;color:#e2e8f0}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(2,6,23,.65);backdrop-filter:blur(2px);z-index:50;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal-card{background:#1e293b;border:1px solid #334155;border-radius:12px;max-width:360px;width:100%;padding:18px 18px 14px;box-shadow:0 18px 40px rgba(0,0,0,.5);animation:modal-in .18s ease}
+@keyframes modal-in{from{opacity:0;transform:scale(.94) translateY(6px)}to{opacity:1;transform:none}}
+.modal-title{font-size:1.02rem;font-weight:700;color:#38bdf8;margin-bottom:8px}
+.modal-title.danger{color:#f87171}
+.modal-body{font-size:.88rem;color:#cbd5e1;line-height:1.45;word-break:break-word}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.modal-actions .btn{margin:0}
+.toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:60;padding:10px 18px;border-radius:10px;font-size:.85rem;font-weight:600;box-shadow:0 10px 26px rgba(0,0,0,.45);animation:toast-in .22s ease;max-width:92%;text-align:center}
+@keyframes toast-in{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
+.toast-ok{background:#065f46;color:#6ee7b7;border:1px solid #047857}
+.toast-err{background:#7f1d1d;color:#fca5a5;border:1px solid #b91c1c}

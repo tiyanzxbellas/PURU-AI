@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api'
 
-export default function ModelPanel({ model, setModel }) {
+export default function ModelPanel({ model, setModel, showToast }) {
   const [loading, setLoading] = useState(false)
   const [models, setModels] = useState([])
   const [hint, setHint] = useState('')
@@ -17,6 +17,7 @@ export default function ModelPanel({ model, setModel }) {
       }
       setModels(data.models)
       setHint(data.models.length + ' model tersedia di ' + data.baseUrl)
+      showToast(data.models.length + ' model dimuat')
     } catch (e) {
       setHint('Network error: ' + e.message)
     } finally {
@@ -36,9 +37,14 @@ export default function ModelPanel({ model, setModel }) {
           style={{ flex: 1 }}
         />
         <button className="btn btn-secondary" onClick={loadModels} disabled={loading}>
-          {loading ? 'Loading...' : 'Load Models'}
+          {loading ? 'Memuat...' : 'Load Models'}
         </button>
       </div>
+      {loading && (
+        <p style={{ color: '#64748b', fontSize: '.82rem', marginTop: 6 }}>
+          <span className="spinner"></span> Mengambil daftar model dari API...
+        </p>
+      )}
       <select
         value={models.includes(model) ? model : ''}
         onChange={(e) => { if (e.target.value) setModel(e.target.value) }}
