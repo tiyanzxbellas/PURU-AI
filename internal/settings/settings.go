@@ -23,6 +23,9 @@ type Config struct {
 	BaseURL *string `json:"baseUrl,omitempty"`
 	APIKey  *string `json:"apiKey,omitempty"`
 	Model   *string `json:"model,omitempty"`
+	// SystemPrompt is an optional custom role/instructions appended to the
+	// system prompt for this user (managed via the /login web page).
+	SystemPrompt *string `json:"systemPrompt,omitempty"`
 }
 
 // Effective merges the server-wide AI config with a user override. Non-nil
@@ -46,7 +49,7 @@ func Effective(global config.AIConfig, user *Config) config.AIConfig {
 // IsEmpty reports whether none of the fields are set (i.e. the user is fully
 // on the server default).
 func (c *Config) IsEmpty() bool {
-	return c == nil || (c.BaseURL == nil && c.APIKey == nil && c.Model == nil)
+	return c == nil || (c.BaseURL == nil && c.APIKey == nil && c.Model == nil && c.SystemPrompt == nil)
 }
 
 // Clone returns a deep copy so callers can mutate freely.
@@ -66,6 +69,10 @@ func (c *Config) Clone() *Config {
 	if c.Model != nil {
 		v := *c.Model
 		out.Model = &v
+	}
+	if c.SystemPrompt != nil {
+		v := *c.SystemPrompt
+		out.SystemPrompt = &v
 	}
 	return out
 }
@@ -149,6 +156,8 @@ func (m *Manager) ClearField(ctx context.Context, chatID int64, field string) er
 		cfg.Model = nil
 	case "base", "baseUrl", "base_url":
 		cfg.BaseURL = nil
+	case "prompt", "systemPrompt", "system_prompt", "role":
+		cfg.SystemPrompt = nil
 	default:
 		return nil
 	}

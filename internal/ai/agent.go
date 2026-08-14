@@ -31,6 +31,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 	"github.com/purujawa06-bot/PURU-AI/internal/prompt"
+	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
@@ -91,6 +92,9 @@ type Agent struct {
 	// own model (from settings) so parallel users never share a mutating
 	// struct.
 	ClientFor func(ctx context.Context, chatID int64) llms.Model
+	// Settings holds per-user API overrides (including SystemPrompt). When set
+	// the agent appends a user-defined system prompt to the base prompt.
+	Settings *settings.Manager
 }
 
 // clientFor picks the model for the request's chat: the per-chat resolver when
@@ -552,6 +556,16 @@ func (a *Agent) ProcessMessage(ctx context.Context, userMessage string, history 
 	if err != nil {
 		log.Printf("[ai] prompt.Get failed, using empty system prompt: %v", err)
 		systemPrompt = ""
+	}
+
+	// Append user-defined system prompt / role from web settings.
+	if a.Settings != nil && opts != nil {
+		if user := a.Settings.Get(ctx, opts.ChatID); user != nil && user.SystemPrompt != nil {
+			sp := strings.TrimSpace(*user.SystemPrompt)
+			if sp != "" {
+				systemPrompt += "\n\n# User-defined instructions\n" + sp
+			}
+		}
 	}
 
 	tools, terr := a.ToolsBuild(opts)

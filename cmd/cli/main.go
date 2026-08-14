@@ -123,6 +123,7 @@ func main() {
 		Registry:  registrySvc,
 		HTTP:      hc,
 		ClientFor: clientFor,
+		Settings:  settingsSvc,
 	}
 	agentSvc.ToolsBuild = func(opts *ai.ProcessOptions) (map[string]*ai.Tool, error) {
 		return ai.BuildTools(agentSvc, opts), nil

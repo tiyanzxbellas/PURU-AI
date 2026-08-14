@@ -29,7 +29,7 @@ func TestEffectiveMerge(t *testing.T) {
 }
 
 func TestConfigEmptyAndClone(t *testing.T) {
-	c := &Config{APIKey: s("sk")}
+	c := &Config{APIKey: s("sk"), SystemPrompt: s("role")}
 	if c.IsEmpty() {
 		t.Fatal("non-empty config reported empty")
 	}
@@ -38,23 +38,27 @@ func TestConfigEmptyAndClone(t *testing.T) {
 	}
 
 	clone := c.Clone()
-	if clone == c || *clone.APIKey != "sk" {
+	if clone == c || *clone.APIKey != "sk" || *clone.SystemPrompt != "role" {
 		t.Fatal("clone must be a deep copy")
 	}
 	*clone.APIKey = "changed"
-	if *c.APIKey != "sk" {
+	*clone.SystemPrompt = "changed"
+	if *c.APIKey != "sk" || *c.SystemPrompt != "role" {
 		t.Fatal("mutating clone changed source")
 	}
 }
 
 func TestConfigJSON(t *testing.T) {
-	raw := []byte(`{"model":"m","apiKey":"sk"}`)
+	raw := []byte(`{"model":"m","apiKey":"sk","systemPrompt":"Kamu adalah asisten"}`)
 	var c Config
 	if err := jsonUnmarshal(raw, &c); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if c.Model == nil || *c.Model != "m" || c.APIKey == nil || *c.APIKey != "sk" || c.BaseURL != nil {
 		t.Fatalf("bad decode: %+v", c)
+	}
+	if c.SystemPrompt == nil || *c.SystemPrompt != "Kamu adalah asisten" {
+		t.Fatalf("systemPrompt not decoded: %+v", c)
 	}
 	if b, err := json.Marshal(&Config{}); err != nil || string(b) != "{}" {
 		t.Fatalf("empty config should marshal to {}: %s err=%v", b, err)

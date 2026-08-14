@@ -15,16 +15,17 @@ import (
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
 	"github.com/purujawa06-bot/PURU-AI/internal/app"
+	"github.com/purujawa06-bot/PURU-AI/internal/auth"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
-	"github.com/purujawa06-bot/PURU-AI/internal/health"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
+	"github.com/purujawa06-bot/PURU-AI/internal/web"
 )
 
 func main() {
@@ -79,18 +80,21 @@ func main() {
 		Registry:  registrySvc,
 		HTTP:      hc,
 		ClientFor: clientFor,
+		Settings:  settingsSvc,
 	}
 	memSvc := memory.New(llm, vfsSvc)
 	memSvc.ClientFor = clientFor
 	tg := telegram.New(cfg.TelegramBotToken, hc)
+	authSvc := auth.New(fb)
 	appSvc := app.New(cfg, tg, histStore, vfsSvc, agentSvc, memSvc, catalogSvc, registrySvc)
 	appSvc.Settings = settingsSvc
+	appSvc.Auth = authSvc
 
-	// Health server (bind failures are non-fatal for the bot).
-	srv := health.Serve(cfg.Hostname, cfg.Port)
+	// Health + web settings server (bind failures are non-fatal for the bot).
+	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc)
 	go func() {
 		if lerr := srv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
-			log.Printf("health server: %v", lerr)
+			log.Printf("web server: %v", lerr)
 		}
 	}()
 

@@ -17,11 +17,11 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Kegagalan balasan AI (toolset build, model tidak tersedia, respon kosong) selalu ditulis ke log dengan prefix `[ai]` (per-attempt + `finish_reason` + alasan akhir) supaya fallback "Maaf, saya tidak bisa merespons saat ini." mudah ditelusuri penyebabnya
 - **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-tool 2 menit; loop & context tool dijaga langchaingo executor (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse; semua teks keluar di-sanitasi jadi valid UTF-8 (`strings.ToValidUTF8`) agar tidak kena `400 text must be encoded in UTF-8`
-- **Per-user API Config** — user bisa memakai API sendiri (`/config api|model|base`) disimpan di Firebase RTDB, partial override atas default server; resolusi client per request sehingga aman paralel
+- **Per-user API Config via Web** — `/pw <password>` lalu `/login` untuk link halaman pengaturan web mobile-friendly (`/login/{id}/{pw}`). Di sana user bisa set base URL/API key/model sendiri, inject **system prompt / role** (di-append ke system prompt bawaan), dan mengelola skills (list/search/install/delete). Partial override global via `settings.Effective`; resolusi client per request sehingga aman paralel
 - **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
 
-> ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
-- **Paralel antar-user** — semua user diproses bersamaan (tanpa antrian); jika user yang sama mengirim pesan AI saat request masih berjalan, dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...` (command non-AI seperti `/menu`, `/token`, `/config` tetap langsung dieksekusi tanpa diblok)
+> ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`), dan password login web juga **plaintext** di `auth/<id>` (diperlukan karena link `/login/{id}/{pw}` memakai nilai mentahnya). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
+- **Paralel antar-user** — semua user diproses bersamaan (tanpa antrian); jika user yang sama mengirim pesan AI saat request masih berjalan, dibalas `⏳ Masih ada yang lagi diproses, tunggu sebentar ya...` (command non-AI seperti `/menu`, `/clear`, `/reset`, `/login`, `/pw` tetap langsung dieksekusi tanpa diblok)
 - **Jawaban final sebagai pesan baru** — hasil AI dikirim sebagai pesan baru (bukan edit), placeholder "🤔 sedang berpikir..." dihapus setelah jawaban terkirim
 
 ## Commands
@@ -31,34 +31,21 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 | `/start` | Memulai bot |
 | `/menu` | Menampilkan daftar perintah |
 | `/clear` | Menghapus riwayat percakapan |
-| `/token` | Melihat penggunaan token |
-| `/info` | Melihat info memory (`/info memory`) |
-| `/config` | Melihat status API yang dipakai |
-| `/config api <key>` | Set API key sendiri |
-| `/config model <nama>` | Set model sendiri |
-| `/config base <url>` | Set base URL sendiri (OpenAI-compatible) |
-| `/config clear` | Hapus pengaturan API sendiri (kembali ke default server) |
-| `/config test` | Tes koneksi ke API yang dipakai |
-| `/reset` | Melihat daftar reset |
-| `/reset config` | Hapus pengaturan API sendiri |
-| `/reset memory` | Hapus MEMORY.md (ingatan user) |
-| `/reset chat` | Hapus riwayat percakapan + file VFS |
-| `/skills` | Menampilkan daftar skill |
-| `/skills search <query>` | Mencari skill — GitHub code search (`filename:SKILL.md`) + ClawHub, hasil antar-registry di-interleave supaya keduanya muncul |
-| `/skills install <target>` | Install skill (GitHub `owner/repo[/path]` atau URL; ClawHub `clawhub:<slug>`) |
-| `/skills builtin [nama]` | Lihat / install skill bawaan (`weather`, `summarize`, `github`, `skill-creator`) |
-| `/skills info <nama>` | Menampilkan detail skill |
-| `/skills read <nama>` | Membaca isi skill |
-| `/skills delete <nama>` | Menghapus skill |
-| `/skills migrate` | Migrate skill lama ke format baru |
 | `/ai <pesan>` | Mengobrol dengan AI (wajib di grup) |
+| `/reset chat` | Reset riwayat percakapan + file VFS (lihat `/reset` untuk semua subcommand) |
+| `/pw <password>` | Set password login web (minimal 4 karakter, URL-safe) |
+| `/login` | Dapatkan link halaman pengaturan web `https://<base_url>/login/<id>/<pw>` |
 
 Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**, gunakan `/ai` diikuti pesan Anda.
+
+Pengaturan API (base URL, API key, model, system prompt/role) dan manajemen skills (list/search/install/delete) kini dikelola lewat **halaman web** (`/login`), bukan lagi command Telegram `/config` & `/skills`. Perintah `/config` & `/skills` diarahkan ke `/login`.
+
+Command lama yang masih tersedia (tidak dipromosikan): `/token`, `/info`, `/reset config`, `/reset memory`.
 
 ## Arsitektur
 
 ```
-main.go                 — entrypoint: config, health server, long-poll loop + conflict retry
+main.go                 — entrypoint: config, web/health server, long-poll loop + conflict retry
 internal/
 ├── config/             — config loader & validasi env
 ├── telegram/           — klien Bot API (long-poll synchronous, send/edit/upload, download)
@@ -68,14 +55,15 @@ internal/
 ├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url) + ListKeys shallow
 ├── vfs/                — virtual file system per-user (DeleteDir pindai store content/index, tahan index korup)
 ├── history/            — history persistence (LRU+TTL + RTDB)
-├── settings/           — per-user API config (base URL/key/model) di RTDB + cache TTL
+├── settings/           — per-user API config (base URL/key/model/system prompt) di RTDB + cache TTL
 ├── tokens/             — tiktoken-go (o200k_base)
 ├── skills/             — loader/manifest SKILL.md + registry manager (import logika `pkg/skills` picoclaw: code search, install disk→VFS, builtin)
 ├── prompt/             — system prompt (text/template, braces di-escape)
 ├── memory/             — auto-update MEMORY.md (model langchaingo)
 ├── jsrun/              — goja: cheerio shim + evaluate math
 ├── e2b/                — client E2B murni HTTP (sandbox/execute/files)
-└── health/             — HTTP health check
+├── auth/               — password login web per-user di RTDB `auth/{chatID}` (`/pw` & `/login`)
+└── web/                — halaman settings `/login/{id}/{pw}` (mobile-friendly, embed static) + API JSON; menggantikan health/ (JSON health `/` & `/health` dipertahankan)
 ```
 
 ## Tools yang Tersedia untuk AI
@@ -127,8 +115,9 @@ Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kura
 
 | Variabel | Default | Deskripsi |
 |----------|---------|-----------|
-| `HOSTNAME` | `localhost` | Alamat bind server |
-| `PORT` | `3000` | Port server |
+| `HOSTNAME` | `localhost` | Alamat bind web/health server |
+| `PORT` | `3000` | Port web/health server |
+| `PUBLIC_BASE_URL` | *(kosong)* | URL publik untuk link halaman `/login/{id}/{pw}` (mis. `https://bot.example.com`). Bila kosong, `/login` fallback ke `http://{hostname}:{port}` (tak bisa diakses publik) |
 | `TEMPERATURE` | `0` | Temperature model AI |
 | `MAX_LOOP` | `20` | Iterasi maksimal agent per request |
 | `HISTORY_CACHE_MAX` | `500` | User maksimal di LRU cache |
@@ -139,7 +128,7 @@ Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kura
 | `OPENAI_APIKEY` | `sk-843e3f05f05eacfe-55n2je-f2c2b844` | API key (bila kosong dipakai default) |
 | `OPENAI_MODEL` | `puru` | Nama model (bila kosong dipakai default) |
 | `E2B_TEMPLATE` | `code-interpreter-v1` | Template sandbox E2B untuk eksekusi kode (template `default` sudah dihapus dari platform E2B) |
-| `GITHUB_TOKEN` | *(kosong)* | Token GitHub untuk `/skills search`. **Wajib** — GitHub code search API menolak tanpa token (HTTP 401) |
+| `GITHUB_TOKEN` | *(kosong)* | Token GitHub untuk search skill di halaman web. **Wajib** — GitHub code search API menolak tanpa token (HTTP 401 → hasil kosong) |
 | `CLAWHUB_APIKEY` | *(kosong)* | Token ClawHub (opsional). Registry ClawHub aktif bila diisi (base URL default `https://clawhub.ai`) |
 
 ## Debug CLI

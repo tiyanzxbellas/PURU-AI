@@ -17,6 +17,7 @@ type Config struct {
 	TelegramBotToken  string
 	Hostname          string
 	Port              int
+	PublicBaseURL     string
 	PublicRTDB        string
 	AI                AIConfig
 	E2BApiKey         string
@@ -90,6 +91,7 @@ func Load() (*Config, error) {
 		TelegramBotToken: os.Getenv("BOT_TOKEN"),
 		Hostname:         envString("HOSTNAME", "localhost"),
 		Port:             port,
+		PublicBaseURL:    envString("PUBLIC_BASE_URL", ""),
 		PublicRTDB:       os.Getenv("PUBLIC_RTDB"),
 		AI: AIConfig{
 			BaseURL: envString("OPENAI_BASEURL", defaultBaseURL),

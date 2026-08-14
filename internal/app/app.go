@@ -19,6 +19,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/auth"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
@@ -28,7 +29,7 @@ const (
 	pipelineUsers    = 5
 )
 
-var knownCommands = []string{"/start", "/menu", "/clear", "/token", "/info", "/reset", "/skills", "/config"}
+var knownCommands = []string{"/start", "/menu", "/clear", "/token", "/info", "/reset", "/login", "/pw"}
 
 type App struct {
 	cfg      *config.Config
@@ -40,6 +41,7 @@ type App struct {
 	catalog  *skills.Catalog
 	registry *skills.Registry
 	Settings *settings.Manager
+	Auth     *auth.Manager
 	busy     sync.Map // set of user IDs with an in-flight request
 	memMu    sync.Map // per-user mutex serializing background memory updates
 }
