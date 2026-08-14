@@ -11,6 +11,7 @@ textarea{min-height:80px;resize:vertical}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .card{background:#1e293b;border-radius:8px;padding:12px;margin:10px 0}
 .skill-item{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #0f172a;font-size:.85rem}
+.skill-item.selected{background:#1d4ed8;border-radius:6px;padding:6px 8px}
 .skill-name{font-weight:600;color:#e2e8f0}
 .skill-desc{font-size:.78rem;color:#64748b}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid #e2e8f0;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}

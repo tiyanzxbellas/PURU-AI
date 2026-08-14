@@ -4,12 +4,9 @@
 package web
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -29,17 +26,17 @@ var distFS embed.FS
 
 // Serve returns an http.Server that mounts the health check on "/" (preserving
 // the existing JSON contract) and the settings page + API under /login/{id}/{pw}.
-func Serve(cfg *config.Config, hc *http.Client, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) *http.Server {
+func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) *http.Server {
 	srv := &http.Server{
 		Addr:    cfg.Hostname + ":" + itoa(cfg.Port),
-		Handler: NewMux(cfg.AI, hc, am, sm, cat, reg),
+		Handler: NewMux(am, sm, cat, reg),
 	}
 	return srv
 }
 
 // NewMux builds the HTTP handler with the health check, the login page and the
 // settings API. Exposed separately so tests can exercise the routes directly.
-func NewMux(globalAI config.AIConfig, hc *http.Client, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) http.Handler {
+func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) http.Handler {
 	mux := http.NewServeMux()
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
@@ -75,8 +72,6 @@ func NewMux(globalAI config.AIConfig, hc *http.Client, am *auth.Manager, sm *set
 			apiConfigHandler(am, sm)(w, r)
 		case "/api/config/clear":
 			apiConfigClearHandler(am, sm)(w, r)
-		case "/api/models":
-			apiModelsHandler(am, sm, globalAI, hc)(w, r)
 		case "/api/skills/list":
 			apiSkillsListHandler(am, cat)(w, r)
 		case "/api/skills/search":
@@ -224,7 +219,9 @@ func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
 		case http.MethodGet:
 			cfg := sm.Get(r.Context(), id)
 			eff := settings.Effective(config.AIConfig{}, cfg)
-			resp := map[string]any{"ok": true, "baseUrl": eff.BaseURL, "model": eff.Model, "hasApiKey": eff.APIKey != ""}
+			// API key dikembalikan mentah (permintaan user) — halaman login
+			// diproteksi password sehingga hanya pemilik chat yang bisa lihat.
+			resp := map[string]any{"ok": true, "baseUrl": eff.BaseURL, "apiKey": eff.APIKey, "model": eff.Model}
 			if cfg != nil && cfg.SystemPrompt != nil {
 				resp["systemPrompt"] = *cfg.SystemPrompt
 			} else {
@@ -300,79 +297,6 @@ func apiConfigClearHandler(am *auth.Manager, sm *settings.Manager) http.HandlerF
 		}
 		jsonOK(w, map[string]any{"ok": true})
 	}
-}
-
-// ---------------------------------------------------------------------------
-// API: models
-// ---------------------------------------------------------------------------
-
-func apiModelsHandler(am *auth.Manager, sm *settings.Manager, global config.AIConfig, hc *http.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
-			return
-		}
-		id, ok := resolveAuth(r, am)
-		if !ok {
-			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
-			return
-		}
-		eff := settings.Effective(global, sm.Get(r.Context(), id))
-		ids, err := fetchModels(r.Context(), eff, hc)
-		if err != nil {
-			jsonErr(w, http.StatusBadGateway, err.Error())
-			return
-		}
-		jsonOK(w, map[string]any{"ok": true, "models": ids, "baseUrl": eff.BaseURL})
-	}
-}
-
-// fetchModels queries the provider's OpenAI-compatible GET /models endpoint for
-// the effective (global + user override) API config.
-func fetchModels(ctx context.Context, aiCfg config.AIConfig, hc *http.Client) ([]string, error) {
-	if strings.TrimSpace(aiCfg.BaseURL) == "" {
-		return nil, errors.New("Base URL belum diset")
-	}
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(aiCfg.BaseURL, "/")+"/models", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	if aiCfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("API models HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode daftar model: %w", err)
-	}
-	var ids []string
-	for _, m := range payload.Data {
-		if m.ID != "" {
-			ids = append(ids, m.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil, errors.New("API tidak mengembalikan daftar model")
-	}
-	return ids, nil
 }
 
 // ---------------------------------------------------------------------------

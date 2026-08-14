@@ -22,7 +22,6 @@ export default function App() {
     baseUrl: '',
     model: '',
     systemPrompt: '',
-    hasApiKey: false,
   })
   const [apiKey, setApiKey] = useState('')
 
@@ -34,9 +33,8 @@ export default function App() {
           baseUrl: data.baseUrl || '',
           model: data.model || '',
           systemPrompt: data.systemPrompt || '',
-          hasApiKey: !!data.hasApiKey,
         })
-        setApiKey('')
+        setApiKey(data.apiKey || '')
       }
     } catch {}
   }, [])

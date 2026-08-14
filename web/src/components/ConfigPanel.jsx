@@ -29,9 +29,10 @@ export default function ConfigPanel({ config, apiKey, setApiKey, onSave, onClear
       <input
         type="password"
         value={apiKey}
-        placeholder={config.hasApiKey ? 'Current key set (leave empty to keep)' : 'sk-...'}
+        placeholder="sk-..."
         onChange={(e) => setApiKey(e.target.value)}
       />
+      <div className="hint">API key tersimpan & ditampilkan; kosongkan lalu Save untuk menghapusnya.</div>
       <label>System Prompt / Role</label>
       <textarea
         value={local.systemPrompt}

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
-	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
@@ -103,7 +102,7 @@ func newWebEnv(t *testing.T) *webEnv {
 	v := vfs.New(fb)
 	cat := skills.NewCatalog(v)
 	reg := skills.NewRegistry(v, skills.RegistryOptions{})
-	mux := NewMux(config.AIConfig{}, http.DefaultClient, am, sm, cat, reg)
+	mux := NewMux(am, sm, cat, reg)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &webEnv{am: am, sm: sm, cat: cat, reg: reg, vfs: v, srv: srv}
@@ -227,14 +226,14 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 		OK        bool   `json:"ok"`
 		BaseURL   string `json:"baseUrl"`
 		Model     string `json:"model"`
-		HasKey    bool   `json:"hasApiKey"`
+		APIKey    string `json:"apiKey"`
 		SysPrompt string `json:"systemPrompt"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&init); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if !init.OK || init.HasKey || init.SysPrompt != "" {
+	if !init.OK || init.APIKey != "" || init.SysPrompt != "" {
 		t.Fatalf("unexpected initial state: %+v", init)
 	}
 
@@ -266,14 +265,14 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 		OK        bool   `json:"ok"`
 		BaseURL   string `json:"baseUrl"`
 		Model     string `json:"model"`
-		HasKey    bool   `json:"hasApiKey"`
+		APIKey    string `json:"apiKey"`
 		SysPrompt string `json:"systemPrompt"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if got.BaseURL != "https://api.openai.com/v1" || got.Model != "gpt-4o" || !got.HasKey || got.SysPrompt != "Kamu adalah asisten" {
+	if got.BaseURL != "https://api.openai.com/v1" || got.Model != "gpt-4o" || got.APIKey != "sk-secret" || got.SysPrompt != "Kamu adalah asisten" {
 		t.Fatalf("config not saved: %+v", got)
 	}
 
@@ -295,78 +294,15 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after struct {
-		HasKey bool `json:"hasApiKey"`
+		APIKey string `json:"apiKey"`
 	}
 	json.NewDecoder(resp.Body).Decode(&after)
 	resp.Body.Close()
-	if after.HasKey {
+	if after.APIKey != "" {
 		t.Fatal("key still present after clear")
 	}
 }
 
-func TestAPIModels(t *testing.T) {
-	// Fake OpenAI-compatible /models endpoint.
-	modelsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Header.Get("Authorization") != "Bearer sk-test" {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"bad key"}`))
-			return
-		}
-		w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"puru"}]}`))
-	}))
-	t.Cleanup(modelsSrv.Close)
-
-	env := newWebEnv(t)
-	setupAuth(t, env, 7, "pw")
-	base := env.srv.URL + "/login/7/pw/api"
-
-	// no base URL configured -> 502 with a clear error
-	resp, err := http.Get(base + "/models")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fail struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&fail); err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway || fail.Error == "" {
-		t.Fatalf("expected 502 + error, got %d %+v", resp.StatusCode, fail)
-	}
-
-	// configure base URL + key, then list models
-	cfg := &settings.Config{}
-	u := modelsSrv.URL
-	key := "sk-test"
-	cfg.BaseURL = &u
-	cfg.APIKey = &key
-	if err := env.sm.Set(context.Background(), 7, cfg); err != nil {
-		t.Fatal(err)
-	}
-	resp, err = http.Get(base + "/models")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var d struct {
-		OK     bool     `json:"ok"`
-		Models []string `json:"models"`
-		Base   string   `json:"baseUrl"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if !d.OK || len(d.Models) != 3 || d.Models[0] != "gpt-4o" || d.Base != modelsSrv.URL {
-		t.Fatalf("unexpected models response: %+v", d)
-	}
-}
 
 func TestAPIAuthRequired(t *testing.T) {
 	env := newWebEnv(t)
