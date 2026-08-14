@@ -303,6 +303,90 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigPartialModelUpdateKeepsSystemPrompt(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 11, "pw")
+	base := env.srv.URL + "/login/11/pw/api"
+
+	// Save full config with a system prompt.
+	full, _ := json.Marshal(map[string]string{
+		"baseUrl": "https://api.example.com/v1", "apiKey": "sk-x",
+		"model": "gpt-4o", "systemPrompt": "Kamu adalah asisten yang ramah",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(full))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save got %d, want 200", resp.StatusCode)
+	}
+
+	// Apply model only (what the Model section sends on Terapkan/Pilih).
+	partial, _ := json.Marshal(map[string]string{"model": "gpt-4o-mini"})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(partial))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial save got %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Model     string `json:"model"`
+		APIKey    string `json:"apiKey"`
+		BaseURL   string `json:"baseUrl"`
+		SysPrompt string `json:"systemPrompt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Model != "gpt-4o-mini" {
+		t.Fatalf("model = %q, want gpt-4o-mini", got.Model)
+	}
+	if got.SysPrompt != "Kamu adalah asisten yang ramah" {
+		t.Fatalf("systemPrompt hilang setelah partial update: %q", got.SysPrompt)
+	}
+	if got.APIKey != "sk-x" || got.BaseURL != "https://api.example.com/v1" {
+		t.Fatalf("field lain hilang: %+v", got)
+	}
+
+	// Clearing the model must also keep the system prompt.
+	clearModel, _ := json.Marshal(map[string]string{"model": ""})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(clearModel))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got2 struct {
+		Model     string `json:"model"`
+		SysPrompt string `json:"systemPrompt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got2); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got2.Model != "" {
+		t.Fatalf("model = %q, want empty", got2.Model)
+	}
+	if got2.SysPrompt != "Kamu adalah asisten yang ramah" {
+		t.Fatalf("systemPrompt hilang setelah clear model: %q", got2.SysPrompt)
+	}
+}
+
 
 func TestAPIAuthRequired(t *testing.T) {
 	env := newWebEnv(t)

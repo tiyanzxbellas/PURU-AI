@@ -264,10 +264,15 @@ func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
 					cfg.Model = body.Model
 				}
 			}
-			// SystemPrompt always applied (even if empty = clear).
-			cfg.SystemPrompt = body.SystemPrompt
-			if cfg.SystemPrompt != nil && strings.TrimSpace(*cfg.SystemPrompt) == "" {
-				cfg.SystemPrompt = nil
+			// SystemPrompt hanya diubah bila field dikirim (non-nil) — biarkan
+			// partial override {model} saja tidak menghapus system prompt.
+			// Nilai kosong = hapus.
+			if body.SystemPrompt != nil {
+				if strings.TrimSpace(*body.SystemPrompt) == "" {
+					cfg.SystemPrompt = nil
+				} else {
+					cfg.SystemPrompt = body.SystemPrompt
+				}
 			}
 			if err := sm.Set(r.Context(), id, cfg); err != nil {
 				jsonErr(w, http.StatusInternalServerError, err.Error())
