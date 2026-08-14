@@ -18,8 +18,10 @@ RUN go mod download
 
 COPY . .
 # Use the freshly built frontend bundle from the web stage (keeps the image
-# self-contained even when internal/web/dist is not committed).
-COPY --from=web-build /web/internal/web/dist ./internal/web/dist
+# self-contained even when internal/web/dist is not committed). vite.config.js
+# sets outDir='../internal/web/dist' which, relative to WORKDIR /web, lands on
+# /internal/web/dist inside the web-build stage.
+COPY --from=web-build /internal/web/dist ./internal/web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /app/puru-ai .
 
 # Runtime stage
