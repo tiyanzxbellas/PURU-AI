@@ -18,7 +18,9 @@ import (
 	"time"
 )
 
-const BaseURL = "https://api.telegram.org"
+// BaseURL is the Telegram Bot API base URL. It is a var so tests can point the
+// client at an httptest server; production always uses the real endpoint.
+var BaseURL = "https://api.telegram.org"
 
 type API struct {
 	token   string

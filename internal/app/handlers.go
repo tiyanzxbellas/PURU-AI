@@ -13,7 +13,7 @@ import (
 
 const menuText = "*PURU-AI*\n\n" +
 	"*Perintah:*\n" +
-	"/ai <pesan> — Mengobrol dengan AI\n" +
+	"/ai <pesan> — Mengobrol dengan AI (khusus grup)\n" +
 	"/clear — Hapus riwayat percakapan\n" +
 	"/reset chat — Reset riwayat & file\n" +
 	"/pw <password> — Set password login web\n" +
@@ -52,6 +52,11 @@ func isCommandText(text string) bool {
 func (a *App) handleText(ctx context.Context, msg *telegram.Message) error {
 	cmd, rest := splitCommand(msg.Text)
 	if cmd == "/ai" {
+		// /ai hanya untuk grup; di chat pribadi semua pesan sudah otomatis
+		// diproses sehingga perintahnya dilarang.
+		if !a.isGroup(msg) {
+			return a.safeReply(ctx, msg, "Tidak perlu /ai di chat pribadi - langsung kirim pesan saja untuk mengobrol dengan AI.", true)
+		}
 		if rest == "" {
 			return a.safeReply(ctx, msg, "Gunakan /ai diikuti pesan, contoh: /ai apa kabar?", true)
 		}

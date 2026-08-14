@@ -78,8 +78,16 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 	userID := msg.From.ID
 	chatID := msg.Chat.ID
+	caption := strings.TrimSpace(msg.Caption)
+	// Di grup, file hanya diproses bila caption diawali "/ai" (mis. caption
+	// "/ai analisis file ini"). File lain di grup diabaikan agar file tanpa
+	// izin tidak masuk pipeline AI. Prefix "/ai" di-strip supaya parsing
+	// vfsPath/prompt di bawah bekerja normal.
 	if a.isGroup(msg) {
-		return nil
+		if !strings.HasPrefix(caption, "/ai") {
+			return nil
+		}
+		caption = strings.TrimSpace(strings.TrimPrefix(caption, "/ai"))
 	}
 	doc := msg.Document
 	if doc == nil {
@@ -89,7 +97,6 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 		return a.safeReply(ctx, msg, "⚠️ File terlalu besar untuk diproses (maks 10MB).", true)
 	}
 
-	caption := strings.TrimSpace(msg.Caption)
 	var vfsPath, prompt string
 	if idx := strings.Index(caption, " "); idx > 0 && strings.HasPrefix(caption, "/") {
 		vfsPath = strings.TrimPrefix(caption[:idx], "/")
