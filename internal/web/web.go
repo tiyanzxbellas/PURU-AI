@@ -176,8 +176,17 @@ func loginHandler(am *auth.Manager, dist fs.FS) http.HandlerFunc {
 			return
 		}
 		prefix := fmt.Sprintf("/login/%d/%s", id, pw)
-		rel := strings.TrimPrefix(r.URL.Path, prefix)
-		rel = strings.TrimPrefix(rel, "/")
+		rest := strings.TrimPrefix(r.URL.Path, prefix)
+		// The SPA is served at /login/{id}/{pw}/ (trailing slash) so the
+		// relative ./assets/ refs in the built index.html resolve to
+		// /login/{id}/{pw}/assets/... Without the slash the browser treats the
+		// last path segment as a file, drops it and requests
+		// /login/{id}/assets/... which fails auth -> blank page (401).
+		if rest == "" {
+			http.Redirect(w, r, prefix+"/", http.StatusMovedPermanently)
+			return
+		}
+		rel := strings.TrimPrefix(rest, "/")
 		if rel == "" || !strings.Contains(filepath.Base(rel), ".") {
 			rel = "index.html"
 		}

@@ -162,9 +162,24 @@ func TestLoginPageServesBundleAssets(t *testing.T) {
 	env := newWebEnv(t)
 	setupAuth(t, env, 123, "pw-saya")
 	base := env.srv.URL + "/login/123/pw-saya"
+	noRedirect := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	// /login/{id}/{pw} without trailing slash must 301 -> /login/{id}/{pw}/ so
+	// the relative ./assets/ refs resolve to the authenticated directory.
+	resp, err := noRedirect.Get(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("expected 301 redirect, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login/123/pw-saya/" {
+		t.Fatalf("Location = %q, want /login/123/pw-saya/", loc)
+	}
 
 	// The built index.html must reference relative ./assets/... files.
-	resp, err := http.Get(base)
+	resp, err = http.Get(base + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
