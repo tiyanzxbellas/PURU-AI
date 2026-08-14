@@ -116,46 +116,14 @@ func Load() (*Config, error) {
 // /login links. Resolution order:
 //
 //  1. Explicit PUBLIC_BASE_URL.
-//  2. Known PaaS-provided URLs (Render, Koyeb, Railway, Fly.io, Heroku) so
-//     /login works out of the box without setting PUBLIC_BASE_URL.
-//  3. Fallback http://{HOSTNAME}:{PORT} when HOSTNAME is a real address.
-//  4. http://localhost:{PORT} as the final default when PUBLIC_BASE_URL is
-//     not set (bind-all HOSTNAME values like 0.0.0.0 are not usable as a
-//     public host, so it defaults to localhost instead of an empty link).
+//  2. http://localhost:{PORT} as the default when PUBLIC_BASE_URL is empty.
 //
 // Never returns "".
 func (c *Config) ResolvePublicBaseURL() string {
 	if c.PublicBaseURL != "" {
 		return strings.TrimRight(c.PublicBaseURL, "/")
 	}
-	if v := os.Getenv("RENDER_EXTERNAL_URL"); v != "" {
-		return strings.TrimRight(v, "/")
-	}
-	if v := os.Getenv("KOYEB_PUBLIC_DOMAIN"); v != "" {
-		return "https://" + v
-	}
-	if v := os.Getenv("KOYEB_SERVICE_DOMAIN"); v != "" {
-		return "https://" + v
-	}
-	if v := os.Getenv("KOYEB_APP_DOMAIN"); v != "" {
-		return "https://" + v
-	}
-	if v := os.Getenv("RAILWAY_PUBLIC_DOMAIN"); v != "" {
-		return "https://" + v
-	}
-	if v := os.Getenv("FLY_APP_NAME"); v != "" {
-		return "https://" + v + ".fly.dev"
-	}
-	if v := os.Getenv("HEROKU_APP_NAME"); v != "" {
-		return "https://" + v + ".herokuapp.com"
-	}
-	switch c.Hostname {
-	case "", "0.0.0.0", "::", "[::]":
-		// Hostname bind-all tidak bisa dipakai sebagai host publik; default
-		// ke localhost supaya /login selalu menghasilkan link yang sah.
-		return fmt.Sprintf("http://localhost:%d", c.Port)
-	}
-	return fmt.Sprintf("http://%s:%d", c.Hostname, c.Port)
+	return fmt.Sprintf("http://localhost:%d", c.Port)
 }
 
 func envString(key, def string) string {
