@@ -12,7 +12,7 @@ function loadSaved() {
   }
 }
 
-export default function ModelPanel({ model, setModel, showToast }) {
+export default function ModelPanel({ model, onModelChange, showToast }) {
   const [input, setInput] = useState('')
   const [saved, setSaved] = useState([])
 
@@ -26,20 +26,19 @@ export default function ModelPanel({ model, setModel, showToast }) {
   const apply = () => {
     const name = input.trim()
     if (!name) return
-    if (!saved.includes(name)) persist([name, ...saved])
-    setModel(name)
+    if (!saved.includes(name)) {
+      persist([name, ...saved])
+      showToast('Model "' + name + '" ditambahkan ke daftar')
+    }
     setInput('')
-    showToast('Model "' + name + '" diterapkan')
+    onModelChange(name)
   }
 
-  const pick = (name) => {
-    setModel(name)
-    showToast('Model "' + name + '" dipilih')
-  }
+  const pick = (name) => onModelChange(name)
 
   const remove = (name) => {
     persist(saved.filter((m) => m !== name))
-    if (model === name) setModel('')
+    if (model === name) onModelChange('')
     showToast('Model "' + name + '" dihapus dari daftar')
   }
 
@@ -58,7 +57,7 @@ export default function ModelPanel({ model, setModel, showToast }) {
         <button className="btn btn-success" onClick={apply} disabled={!input.trim()}>Terapkan</button>
       </div>
       <div className="hint">
-        Klik Terapkan untuk menambah model ke daftar. Model aktif tetap disimpan lewat tombol Save di API Config.
+        Terapkan/Pilih langsung menyimpan model ke config bot. Daftar model tersimpan di localStorage browser ini.
       </div>
       <label>Daftar Model Siap Pakai</label>
       {saved.length === 0 ? (

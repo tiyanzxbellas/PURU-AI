@@ -108,6 +108,22 @@ export default function App() {
     }
   }, [confirmModal, alertModal, showToast, reloadConfig])
 
+  // Simpan model ke backend langsung saat Terapkan/Pilih/Hapus di section Model.
+  const onModelChange = useCallback(async (name) => {
+    setConfig((c) => ({ ...c, model: name }))
+    try {
+      const { ok, data } = await api.saveConfig({ model: name })
+      if (ok) {
+        showToast(name ? 'Model "' + name + '" disimpan' : 'Model dikosongkan')
+        reloadConfig()
+      } else {
+        showToast(data.error || 'Gagal menyimpan model', false)
+      }
+    } catch (e) {
+      showToast('Gagal menyimpan model', false)
+    }
+  }, [showToast, reloadConfig])
+
   const selectSection = useCallback((id) => {
     setSection(id)
     setMenuOpen(false)
@@ -145,7 +161,7 @@ export default function App() {
         {section === 'model' && (
           <ModelPanel
             model={config.model}
-            setModel={(v) => setConfig((c) => ({ ...c, model: v }))}
+            onModelChange={onModelChange}
             showToast={showToast}
           />
         )}
