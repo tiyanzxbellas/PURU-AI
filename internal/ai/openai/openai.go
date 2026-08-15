@@ -61,12 +61,13 @@ func (c *Client) Call(ctx context.Context, prompt string, options ...llms.CallOp
 
 // wireMessage is one message in the chat.completions request body.
 type wireMessage struct {
-	Role         string         `json:"role"`
-	Content      any            `json:"content,omitempty"`
-	Name         string         `json:"name,omitempty"`
-	ToolCalls    []wireToolCall `json:"tool_calls,omitempty"`
-	ToolCallID   string         `json:"tool_call_id,omitempty"`
-	FunctionCall *wireFuncCall  `json:"function_call,omitempty"`
+	Role             string         `json:"role"`
+	Content          any            `json:"content,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ToolCalls        []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	FunctionCall     *wireFuncCall  `json:"function_call,omitempty"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
 }
 
 type wireToolCall struct {
@@ -190,12 +191,18 @@ func callName(t llms.ToolCall) string {
 }
 
 // buildMessages converts []llms.MessageContent into wire messages, mirroring
-// langchaingo's openai.GenerateContent.
-func buildMessages(messages []llms.MessageContent) []wireMessage {
+// langchaingo's openai.GenerateContent. When reasonings is non-nil it must be
+// index-aligned with messages: a non-empty entry is written back as the
+// assistant message's reasoning_content (thinking-mode providers like
+// deepseek-reasoner require it to be echoed on every follow-up request).
+func buildMessages(messages []llms.MessageContent, reasonings []string) []wireMessage {
 	out := make([]wireMessage, 0, len(messages))
-	for _, mc := range messages {
+	for i, mc := range messages {
 		m := wireMessage{Role: roleName(mc.Role)}
 		contentToString(mc.Parts, &m)
+		if i < len(reasonings) && reasonings[i] != "" {
+			m.ReasoningContent = reasonings[i]
+		}
 		out = append(out, m)
 	}
 	return out
@@ -223,6 +230,17 @@ func roleName(r llms.ChatMessageType) string {
 // otherwise it falls back to a plain JSON response (some proxies answer with
 // non-SSE JSON even for stream:true).
 func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	return c.GenerateContentWithReasoning(ctx, messages, nil, options...)
+}
+
+// GenerateContentWithReasoning is GenerateContent with support for echoing a
+// thinking-mode model's reasoning_content back to the provider. reasonings is
+// index-aligned with messages: a non-empty entry is attached to the assistant
+// message at that position. Providers such as deepseek-reasoner reject a
+// follow-up request whose assistant history drops reasoning_content, so every
+// replayed assistant turn must carry it. GenerateContent calls this with a nil
+// reasonings slice (no reasoning emitted).
+func (c *Client) GenerateContentWithReasoning(ctx context.Context, messages []llms.MessageContent, reasonings []string, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	opts := llms.CallOptions{}
 	for _, opt := range options {
 		opt(&opts)
@@ -236,7 +254,7 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 	streaming := opts.StreamingFunc != nil
 	req := wireRequest{
 		Model:     model,
-		Messages:  buildMessages(messages),
+		Messages:  buildMessages(messages, reasonings),
 		MaxTokens: opts.MaxTokens,
 		Stream:    streaming,
 	}
@@ -266,12 +284,16 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 	choices := make([]*llms.ContentChoice, len(resp.Choices))
 	for i, ch := range resp.Choices {
 		cc := &llms.ContentChoice{
-			Content:    ch.Message.Content,
-			StopReason: ch.FinishReason,
+			Content:          ch.Message.Content,
+			ReasoningContent: ch.Message.ReasoningContent,
+			StopReason:       ch.FinishReason,
 			GenerationInfo: map[string]any{
 				"CompletionTokens": resp.Usage.CompletionTokens,
 				"PromptTokens":     resp.Usage.PromptTokens,
 				"TotalTokens":      resp.Usage.TotalTokens,
+				// Standardized alias for diagnostics (parity with
+				// langchaingo's openai client).
+				"ThinkingContent": ch.Message.ReasoningContent,
 			},
 		}
 		for _, tc := range ch.Message.ToolCalls {
@@ -303,11 +325,12 @@ type wireResponse struct {
 }
 
 type wireRespMessage struct {
-	Role         string         `json:"role"`
-	Content      string         `json:"content"`
-	ToolCalls    []wireToolCall `json:"tool_calls,omitempty"`
-	ToolCallID   string         `json:"tool_call_id,omitempty"`
-	FunctionCall *wireFuncCall  `json:"function_call,omitempty"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	ToolCalls        []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	FunctionCall     *wireFuncCall  `json:"function_call,omitempty"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
 }
 
 type wireChoice struct {
@@ -408,6 +431,7 @@ func parseSSE(ctx context.Context, resp *http.Response, opts llms.CallOptions) (
 
 		d := ch.Delta
 		out.Choices[0].Message.Content += d.Content
+		out.Choices[0].Message.ReasoningContent += d.ReasoningContent
 
 		if len(d.ToolCalls) > 0 {
 			toolCalls = mergeToolCallDeltas(toolCalls, d.ToolCalls)
@@ -439,8 +463,9 @@ func parseSSE(ctx context.Context, resp *http.Response, opts llms.CallOptions) (
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string         `json:"content"`
-			ToolCalls []wireToolCall `json:"tool_calls"`
+			Content          string         `json:"content"`
+			ToolCalls        []wireToolCall `json:"tool_calls"`
+			ReasoningContent string         `json:"reasoning_content"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

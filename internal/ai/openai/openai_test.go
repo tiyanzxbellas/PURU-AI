@@ -308,7 +308,7 @@ func TestBuildMessagesToolCall(t *testing.T) {
 				llms.ToolCallResponse{ToolCallID: "call_1", Content: "ok"},
 			},
 		},
-	})
+	}, nil)
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
@@ -320,6 +320,122 @@ func TestBuildMessagesToolCall(t *testing.T) {
 	}
 	if msgs[1].Role != "tool" || msgs[1].ToolCallID != "call_1" || msgs[1].Content != "ok" {
 		t.Errorf("tool msg = %+v", msgs[1])
+	}
+}
+
+// TestSSEReasoningContent verifies the client captures reasoning_content from a
+// streamed thinking-mode response (deepseek-reasoner style deltas).
+func TestSSEReasoningContent(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"R1","content":""},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":"R2","content":"final"},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n")
+
+	srv := sseServer(t, sse)
+	defer srv.Close()
+
+	client, _ := New(srv.URL, "test", "test", srv.Client())
+	resp, err := client.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}}},
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if got := resp.Choices[0].ReasoningContent; got != "R1R2" {
+		t.Errorf("reasoning_content = %q, want R1R2", got)
+	}
+	if got := resp.Choices[0].Content; got != "final" {
+		t.Errorf("content = %q, want final", got)
+	}
+	if got := resp.Choices[0].GenerationInfo["ThinkingContent"]; got != "R1R2" {
+		t.Errorf("ThinkingContent = %v, want R1R2", got)
+	}
+}
+
+// TestNonStreamReasoningContent verifies a proxy answering with plain JSON
+// (despite stream:true) still surfaces reasoning_content.
+func TestNonStreamReasoningContent(t *testing.T) {
+	jsonResp := `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning_content":"step-by-step"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(jsonResp))
+	}))
+	defer srv.Close()
+
+	client, _ := New(srv.URL, "test", "test", srv.Client())
+	resp, err := client.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}}},
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if got := resp.Choices[0].ReasoningContent; got != "step-by-step" {
+		t.Errorf("reasoning_content = %q, want step-by-step", got)
+	}
+}
+
+// TestGenerateContentWithReasoning verifies that a thinking-mode assistant
+// message's reasoning_content is echoed back on the wire (index-aligned), and
+// that GenerateContent without reasoning emits none.
+func TestGenerateContentWithReasoning(t *testing.T) {
+	var req wireRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client, _ := New(srv.URL, "test", "test", srv.Client())
+
+	msgs := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}},
+		{
+			Role: llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{
+				llms.TextContent{Text: "jawaban"},
+				llms.ToolCall{ID: "c1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "x", Arguments: `{}`}},
+			},
+		},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.ToolCallResponse{ToolCallID: "c1", Content: "ok"}}},
+	}
+
+	_, err := client.GenerateContentWithReasoning(context.Background(), msgs,
+		[]string{"", "R1", ""},
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContentWithReasoning: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected 3 wire messages, got %d", len(req.Messages))
+	}
+	if req.Messages[0].ReasoningContent != "" {
+		t.Errorf("user message unexpectedly got reasoning: %q", req.Messages[0].ReasoningContent)
+	}
+	if got := req.Messages[1].ReasoningContent; got != "R1" {
+		t.Errorf("assistant reasoning_content = %q, want R1", got)
+	}
+	if req.Messages[2].ReasoningContent != "" {
+		t.Errorf("tool message unexpectedly got reasoning: %q", req.Messages[2].ReasoningContent)
+	}
+
+	// Plain GenerateContent must not emit reasoning_content at all.
+	req = wireRequest{}
+	_, err = client.GenerateContent(context.Background(), msgs,
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	for i, m := range req.Messages {
+		if m.ReasoningContent != "" {
+			t.Errorf("plain GenerateContent emitted reasoning at %d: %q", i, m.ReasoningContent)
+		}
 	}
 }
 

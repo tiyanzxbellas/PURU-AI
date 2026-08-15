@@ -66,6 +66,21 @@ func textChunk(text string) string {
 data: [DONE]`
 }
 
+// reasoningToolCallChunk builds a streamed thinking-mode tool-call response:
+// the delta carries both reasoning_content and a tool call (deepseek-reasoner
+// style).
+func reasoningToolCallChunk(name, args, reasoning string) string {
+	return `data: {"choices":[{"delta":{"role":"assistant","content":"","reasoning_content":"` + reasoning + `","tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"` + name + `","arguments":"` + args + `"}}]},"finish_reason":"tool_calls"}]}
+data: [DONE]`
+}
+
+// reasoningTextChunk builds a streamed thinking-mode plain-text answer that
+// stops the loop, carrying reasoning_content.
+func reasoningTextChunk(text, reasoning string) string {
+	return `data: {"choices":[{"delta":{"role":"assistant","content":"` + text + `","reasoning_content":"` + reasoning + `"},"finish_reason":"stop"}]}
+data: [DONE]`
+}
+
 // toolCallChunkHF builds a streamed tool-call response in the HF Spaces
 // gateway style: every argument fragment repeats type:"function" and the
 // arguments arrive split across several deltas. This is the regression that
@@ -393,6 +408,146 @@ type invalidArgs struct{ args string }
 
 func (e *invalidArgs) Error() string {
 	return "assistant tool call arguments are not valid JSON: " + e.args
+}
+
+// reasoningMsgReasoning extracts the text of the first "reasoning" part of a
+// persisted assistant message (empty when none).
+func reasoningMsgReasoning(m *messages.Message) string {
+	if !messages.IsParts(m) {
+		return ""
+	}
+	for _, p := range messages.ContentParts(m) {
+		if p.Type() == "reasoning" {
+			return p.Str("text")
+		}
+	}
+	return ""
+}
+
+// TestRunOnceReasoningEchoedOnScratchpad is the regression for thinking-mode
+// providers (deepseek-reasoner family): the reasoning_content produced with a
+// tool call must be echoed back on the assistant message when the next Plan
+// re-sends the tool loop scratchpad — otherwise the API answers HTTP 400
+// ("The reasoning_content in the thinking mode must be passed back").
+func TestRunOnceReasoningEchoedOnScratchpad(t *testing.T) {
+	var lastBody map[string]any
+	srv := fakeChatServer(t, []string{
+		reasoningToolCallChunk("test_tool", `{}`, "step one"),
+		reasoningTextChunk("done", "step two"),
+	}, func(t *testing.T, body map[string]any) {
+		lastBody = body
+	})
+	defer srv.Close()
+
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	agent := &Agent{
+		Client: model,
+		Config: &config.Config{MaxLoop: 5},
+	}
+	toolRan := false
+	tools := map[string]*Tool{
+		"test_tool": {
+			Name: "test_tool",
+			Run: func(ctx context.Context, args map[string]any) (any, error) {
+				toolRan = true
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if !toolRan {
+		t.Fatal("test_tool was not executed")
+	}
+	if res.finalText != "done" {
+		t.Fatalf("unexpected final text: %q", res.finalText)
+	}
+
+	msgs, ok := lastBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("no messages in second request body")
+	}
+	found := false
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok || m["role"] != "assistant" {
+			continue
+		}
+		if _, hasCalls := m["tool_calls"]; !hasCalls {
+			continue
+		}
+		rc, _ := m["reasoning_content"].(string)
+		if rc != "step one" {
+			t.Fatalf("replayed assistant reasoning_content = %q, want %q", rc, "step one")
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("replayed scratchpad has no assistant tool-call message")
+	}
+}
+
+// TestRunOnceReasoningPersisted verifies that a thinking-mode run persists its
+// reasoning_content: intermediate assistant tool-call turns get a "reasoning"
+// part and the final assistant answer keeps its reasoning while Text() returns
+// only the visible answer.
+func TestRunOnceReasoningPersisted(t *testing.T) {
+	srv := fakeChatServer(t, []string{
+		reasoningToolCallChunk("test_tool", `{}`, "step one"),
+		reasoningTextChunk("done", "step two"),
+	}, nil)
+	defer srv.Close()
+
+	model, err := NewModel(srv.URL, "test", "test", srv.Client())
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	agent := &Agent{
+		Client: model,
+		Config: &config.Config{MaxLoop: 5},
+	}
+	tools := map[string]*Tool{
+		"test_tool": {
+			Name: "test_tool",
+			Run:  func(ctx context.Context, args map[string]any) (any, error) { return map[string]any{"ok": true}, nil },
+		},
+	}
+
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if res.finalText != "done" {
+		t.Fatalf("unexpected final text: %q", res.finalText)
+	}
+	if len(res.responseMessages) != 3 {
+		t.Fatalf("expected assistant+tool+assistant, got %d messages", len(res.responseMessages))
+	}
+
+	first := res.responseMessages[0]
+	if first.Role != "assistant" || reasoningMsgReasoning(first) != "step one" {
+		t.Fatalf("intermediate assistant lost reasoning: %+v", first)
+	}
+	if first.Text() != "" {
+		t.Fatalf("intermediate assistant text = %q, want empty", first.Text())
+	}
+
+	last := res.responseMessages[2]
+	if last.Role != "assistant" {
+		t.Fatalf("last message role = %q", last.Role)
+	}
+	if got := reasoningMsgReasoning(last); got != "step two" {
+		t.Fatalf("final assistant reasoning = %q, want %q", got, "step two")
+	}
+	if last.Text() != "done" {
+		t.Fatalf("final assistant Text() = %q, want %q", last.Text(), "done")
+	}
 }
 
 // newAgent builds an Agent wired to the fake server (VFS/Catalog so

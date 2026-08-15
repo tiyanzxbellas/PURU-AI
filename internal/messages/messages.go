@@ -227,9 +227,12 @@ func NetLen(m *Message) int {
 
 // ---------------------------------------------------------------------------
 // pruneMessages port (options used by this project):
-//   reasoning  -> 'before-last-message'
 //   toolCalls  -> 'before-last-6-messages'
 //   emptyMessages -> remove
+//
+// Reasoning parts are NEVER pruned: thinking-mode providers (deepseek-reasoner
+// and friends) require every replayed assistant message to carry its
+// reasoning_content back — dropping it makes the API return HTTP 400.
 // ---------------------------------------------------------------------------
 
 // PruneMessages mirrors Vercel's ai.pruneMessages with the configuration the
@@ -238,24 +241,6 @@ func PruneMessages(msgs []*Message) []*Message {
 	work := make([]*Message, 0, len(msgs))
 	for _, m := range msgs {
 		work = append(work, cloneMessage(m))
-	}
-
-	// reasoning: 'before-last-message'
-	for i, m := range work {
-		if m.Role != "assistant" || !IsParts(m) {
-			continue
-		}
-		if i == len(work)-1 {
-			continue // last message keeps reasoning
-		}
-		parts := make([]Part, 0, len(ContentParts(m)))
-		for _, p := range ContentParts(m) {
-			t := p.Type()
-			if t != "reasoning" && t != "reasoning-file" {
-				parts = append(parts, p)
-			}
-		}
-		SetContentParts(m, parts)
 	}
 
 	// toolCalls: 'before-last-6-messages'
@@ -426,6 +411,10 @@ func SanitizeMessage(m *Message) *Message {
 					continue // drop empty/whitespace text parts
 				}
 				p.SetText(truncateString(t, MaxStoredContent))
+			case "reasoning":
+				if t := p.Str("text"); t != "" {
+					p.SetText(truncateString(t, MaxStoredContent))
+				}
 			case "tool-call":
 				if raw, ok := (*p)["input"]; ok && len(raw) > MaxStoredContent {
 					(*p)["input"] = json.RawMessage(`"[truncated tool input]"`)

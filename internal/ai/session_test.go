@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/schema"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 )
@@ -107,6 +108,60 @@ func TestToChatHistoryKeepsStoredIDs(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "a1" || got[1] != "a1" {
 		t.Fatalf("stored ids not preserved: %v", got)
+	}
+}
+
+// TestToChatHistoryReasoning verifies that a persisted thinking-mode assistant
+// message replays its reasoning_content into llms.AIChatMessage.ReasoningContent
+// so the wire request can echo it back (deepseek-style providers 400 without
+// it).
+func TestToChatHistoryReasoning(t *testing.T) {
+	assistant := &messages.Message{Role: "assistant"}
+	messages.SetContentParts(assistant, []messages.Part{
+		{"type": mustJSON("reasoning"), "text": mustJSON("thinking deeply")},
+		{"type": mustJSON("tool-call"), "toolCallId": mustJSON("c1"), "toolName": mustJSON("test_tool"), "input": mustJSON(map[string]any{})},
+	})
+
+	conv := toChatHistory([]*messages.Message{assistant})
+	if len(conv) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(conv))
+	}
+	am, ok := conv[0].(llms.AIChatMessage)
+	if !ok {
+		t.Fatalf("expected AIChatMessage, got %T", conv[0])
+	}
+	if am.ReasoningContent != "thinking deeply" {
+		t.Errorf("ReasoningContent = %q, want %q", am.ReasoningContent, "thinking deeply")
+	}
+	if am.Content != "" {
+		t.Errorf("Content = %q, want empty (reasoning must not leak into content)", am.Content)
+	}
+	if len(am.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call replayed, got %d", len(am.ToolCalls))
+	}
+}
+
+// TestStepsToChatMessagesReasoning verifies the scratchpad builder tags each
+// assistant step group with the reasoning_content its Plan produced, keyed by
+// absolute step index.
+func TestStepsToChatMessagesReasoning(t *testing.T) {
+	steps := []schema.AgentStep{
+		{Action: schema.AgentAction{Tool: "a", ToolInput: `{}`, ToolID: "c1", Log: ""}},
+		{Action: schema.AgentAction{Tool: "a", ToolInput: `{}`, ToolID: "c2", Log: ""}, Observation: "x"},
+	}
+	out := stepsToChatMessages(steps, []string{"reasoning-a", "reasoning-a"})
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (1 ai + 2 tool), got %d", len(out))
+	}
+	am, ok := out[0].(llms.AIChatMessage)
+	if !ok {
+		t.Fatalf("expected AIChatMessage, got %T", out[0])
+	}
+	if am.ReasoningContent != "reasoning-a" {
+		t.Errorf("scratchpad reasoning = %q, want %q", am.ReasoningContent, "reasoning-a")
+	}
+	if len(am.ToolCalls) != 2 {
+		t.Errorf("expected 2 tool calls in scratchpad, got %d", len(am.ToolCalls))
 	}
 }
 

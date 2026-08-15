@@ -47,6 +47,17 @@ const (
 // fatal for the request and must not be retried.
 var errNoModel = errors.New("no AI model configured")
 
+// reasoningClient is implemented by models that can echo a thinking-mode
+// model's reasoning_content back to the provider. Thinking-mode providers
+// (deepseek-reasoner and friends) 400 on any follow-up request whose assistant
+// history drops the reasoning_content of an earlier turn, so replayed assistant
+// messages must carry it. Our OpenAI-compatible client implements this; other
+// llms.Model implementations fall back to plain GenerateContent.
+type reasoningClient interface {
+	llms.Model
+	GenerateContentWithReasoning(ctx context.Context, messages []llms.MessageContent, reasonings []string, options ...llms.CallOption) (*llms.ContentResponse, error)
+}
+
 const stepLimitHint = "⚠️ Percakapan mencapai batas maksimum langkah. Ketik `lanjut` atau `/ai lanjut` untuk melanjutkan percakapan dengan AI, atau masukkan prompt baru."
 
 // Usage is the token usage of a single model round-trip.
@@ -189,8 +200,11 @@ func toolResultText(p *messages.Part) string {
 }
 
 // responseFromSteps rebuilds the persisted stored messages (assistant tool
-// calls + tool results) from the executor's recorded steps.
-func responseFromSteps(steps []schema.AgentStep) []*messages.Message {
+// calls + tool results) from the executor's recorded steps. reasoningByStep is
+// aligned by absolute step index (see requestAgent.recordReasoning); a
+// non-empty reasoning is persisted as a "reasoning" part so thinking-mode
+// providers get their reasoning_content echoed on the next turn.
+func responseFromSteps(steps []schema.AgentStep, reasoningByStep []string) []*messages.Message {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -202,6 +216,12 @@ func responseFromSteps(steps []schema.AgentStep) []*messages.Message {
 		}
 		group := steps[i:j]
 		var parts []messages.Part
+		if reasoning := reasoningForStep(reasoningByStep, i); strings.TrimSpace(reasoning) != "" {
+			parts = append(parts, messages.Part{
+				"type": mustJSON("reasoning"),
+				"text": mustJSON(reasoning),
+			})
+		}
 		if log := strings.TrimSpace(group[0].Action.Log); log != "" {
 			parts = append(parts, messages.Part{
 				"type": mustJSON("text"),
@@ -246,6 +266,15 @@ func parseObservation(s string) any {
 		return v
 	}
 	return s
+}
+
+// reasoningForStep returns the thinking-mode reasoning recorded for the step at
+// index (empty when the model emitted none).
+func reasoningForStep(reasoningByStep []string, idx int) string {
+	if idx < 0 || idx >= len(reasoningByStep) {
+		return ""
+	}
+	return reasoningByStep[idx]
 }
 
 func stepsFromValues(vals map[string]any) []schema.AgentStep {
@@ -344,6 +373,15 @@ type requestAgent struct {
 	// number of function response parts must equal the number of function call
 	// parts".
 	nextToolIDSeq int
+	// reasoningByStep carries the thinking-mode reasoning_content produced by
+	// each Plan, aligned to the executor's intermediate steps by absolute step
+	// index (steps created by the same Plan share its reasoning). Replayed on
+	// the scratchpad and persisted to history so thinking-mode providers never
+	// see a dropped reasoning_content.
+	reasoningByStep []string
+	// lastReasoning is the reasoning_content of the final (finish) Plan, if
+	// any — attached to the persisted final assistant message.
+	lastReasoning string
 }
 
 func newRequestAgent(model llms.Model, system string, history []*messages.Message, toolMap map[string]*Tool, temperature float64) *requestAgent {
@@ -376,7 +414,7 @@ func (ra *requestAgent) Plan(
 	pv, err := ra.chatTemplate.FormatPrompt(map[string]any{
 		"input":            inputs["input"],
 		"chat_history":     ra.history,
-		"agent_scratchpad": stepsToChatMessages(intermediateSteps),
+		"agent_scratchpad": stepsToChatMessages(intermediateSteps, ra.reasoningByStep),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -384,8 +422,14 @@ func (ra *requestAgent) Plan(
 
 	formatted := pv.Messages()
 	msgList := make([]llms.MessageContent, 0, len(formatted))
+	reasonings := make([]string, 0, len(formatted))
 	for _, m := range formatted {
+		reasoning := ""
+		if am, ok := m.(llms.AIChatMessage); ok {
+			reasoning = am.ReasoningContent
+		}
 		msgList = append(msgList, chatMessageToContent(m))
+		reasonings = append(reasonings, reasoning)
 	}
 
 	callOpts := []llms.CallOption{llms.WithStreamingFunc(noopStream)}
@@ -396,7 +440,12 @@ func (ra *requestAgent) Plan(
 		callOpts = append(callOpts, llms.WithFunctions(ra.functions))
 	}
 
-	resp, err := ra.llm.GenerateContent(ctx, msgList, callOpts...)
+	var resp *llms.ContentResponse
+	if rc, ok := ra.llm.(reasoningClient); ok {
+		resp, err = rc.GenerateContentWithReasoning(ctx, msgList, reasonings, callOpts...)
+	} else {
+		resp, err = ra.llm.GenerateContent(ctx, msgList, callOpts...)
+	}
 	if err != nil {
 		log.Printf("[ai] GenerateContent failed: %v", err)
 		return nil, nil, err
@@ -420,9 +469,11 @@ func (ra *requestAgent) Plan(
 				Log:       choice.Content,
 			})
 		}
+		ra.recordReasoning(choice.ReasoningContent, len(intermediateSteps), len(actions))
 		return actions, nil, nil
 	}
 	if choice.FuncCall != nil {
+		ra.recordReasoning(choice.ReasoningContent, len(intermediateSteps), 1)
 		return []schema.AgentAction{{
 			Tool:      choice.FuncCall.Name,
 			ToolInput: toolArgsJSON(choice.FuncCall.Arguments),
@@ -430,10 +481,28 @@ func (ra *requestAgent) Plan(
 			Log:       choice.Content,
 		}}, nil, nil
 	}
+	ra.lastReasoning = choice.ReasoningContent
 	return nil, &schema.AgentFinish{
 		ReturnValues: map[string]any{"output": choice.Content},
 		Log:          choice.Content,
 	}, nil
+}
+
+// recordReasoning stores the reasoning_content of a Plan that issued tool
+// calls: every intermediate step this Plan creates (from startIdx onward) is
+// marked with the same reasoning so the scratchpad and persisted history can
+// echo it back to thinking-mode providers.
+func (ra *requestAgent) recordReasoning(reasoning string, startIdx, nSteps int) {
+	if nSteps <= 0 {
+		return
+	}
+	for k := 0; k < nSteps; k++ {
+		idx := startIdx + k
+		for idx >= len(ra.reasoningByStep) {
+			ra.reasoningByStep = append(ra.reasoningByStep, "")
+		}
+		ra.reasoningByStep[idx] = reasoning
+	}
 }
 
 func usageFromChoices(resp *llms.ContentResponse) int {
@@ -514,7 +583,7 @@ func (a *Agent) runOnce(ctx context.Context, system string, history []*messages.
 	if len(steps) > maxSteps {
 		res.hitStepLimit = true
 	}
-	res.responseMessages = responseFromSteps(steps)
+	res.responseMessages = responseFromSteps(steps, ra.reasoningByStep)
 
 	if errors.Is(runErr, agents.ErrNotFinished) {
 		res.hitStepLimit = true
@@ -526,9 +595,19 @@ func (a *Agent) runOnce(ctx context.Context, system string, history []*messages.
 
 	res.finalText = strings.TrimSpace(outputFromValues(vals))
 	if res.finalText != "" {
-		// Persist the final assistant turn, like the old loop did.
+		// Persist the final assistant turn, like the old loop did. A
+		// thinking-mode model's reasoning_content is kept as a "reasoning" part
+		// so the next request can echo it (deepseek-style providers 400
+		// otherwise).
 		m := &messages.Message{Role: "assistant"}
-		messages.SetContentString(m, res.finalText)
+		if reasoning := strings.TrimSpace(ra.lastReasoning); reasoning != "" {
+			messages.SetContentParts(m, []messages.Part{
+				{"type": mustJSON("reasoning"), "text": mustJSON(reasoning)},
+				{"type": mustJSON("text"), "text": mustJSON(res.finalText)},
+			})
+		} else {
+			messages.SetContentString(m, res.finalText)
+		}
 		res.responseMessages = append(res.responseMessages, m)
 	}
 	return res, nil

@@ -62,19 +62,23 @@ func toChatHistory(msgs []*messages.Message) []llms.ChatMessage {
 			hasCalls := false
 			if messages.IsParts(m) {
 				for _, p := range messages.ContentParts(m) {
-					if p.Type() != "tool-call" {
-						continue
+					switch p.Type() {
+					case "reasoning", "reasoning-file":
+						if chat.ReasoningContent == "" {
+							chat.ReasoningContent = p.Str("text")
+						}
+					case "tool-call":
+						id := pending.rememberCall(p.Str("toolCallId"))
+						hasCalls = true
+						chat.ToolCalls = append(chat.ToolCalls, llms.ToolCall{
+							ID:   id,
+							Type: "function",
+							FunctionCall: &llms.FunctionCall{
+								Name:      p.Str("toolName"),
+								Arguments: argsFromJSON(p["input"]),
+							},
+						})
 					}
-					id := pending.rememberCall(p.Str("toolCallId"))
-					hasCalls = true
-					chat.ToolCalls = append(chat.ToolCalls, llms.ToolCall{
-						ID:   id,
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      p.Str("toolName"),
-							Arguments: argsFromJSON(p["input"]),
-						},
-					})
 				}
 			}
 			if raw := m.Extra("toolCalls"); len(raw) > 0 {
@@ -181,8 +185,11 @@ func (p *pendingToolIDs) reset() {
 
 // stepsToChatMessages converts the executor's recorded steps into chat messages
 // (grouped by their plan - same Log) so they fit the agent_scratchpad
-// placeholder.
-func stepsToChatMessages(steps []schema.AgentStep) []llms.ChatMessage {
+// placeholder. reasoningByStep is aligned by absolute step index: each message
+// group inherits the reasoning_content its Plan produced so thinking-mode
+// providers (deepseek-reasoner) get the reasoning echoed back, avoiding a 400
+// on the next Plan.
+func stepsToChatMessages(steps []schema.AgentStep, reasoningByStep []string) []llms.ChatMessage {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -194,6 +201,9 @@ func stepsToChatMessages(steps []schema.AgentStep) []llms.ChatMessage {
 		}
 		group := steps[i:j]
 		msg := llms.AIChatMessage{Content: strings.TrimSpace(group[0].Action.Log)}
+		if reasoning := stepsReasoning(reasoningByStep, i); reasoning != "" {
+			msg.ReasoningContent = reasoning
+		}
 		for _, s := range group {
 			msg.ToolCalls = append(msg.ToolCalls, llms.ToolCall{
 				ID:   s.Action.ToolID,
@@ -211,6 +221,15 @@ func stepsToChatMessages(steps []schema.AgentStep) []llms.ChatMessage {
 		i = j
 	}
 	return out
+}
+
+// stepsReasoning returns the reasoning recorded for the step at the given index
+// (empty when absent).
+func stepsReasoning(reasoningByStep []string, idx int) string {
+	if idx < 0 || idx >= len(reasoningByStep) {
+		return ""
+	}
+	return reasoningByStep[idx]
 }
 
 // chatMessageToContent converts a langchain chat message to the generic
