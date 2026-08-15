@@ -72,9 +72,12 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 }
 
 // ---------------------------------------------------------------------------
-// Document handler
+// Document / photo handler
 // ---------------------------------------------------------------------------
 
+// handleDocument processes a user-uploaded document. Images are never stored
+// to VFS: they are summarised by the vision model and injected into the agent
+// via processImage. Non-image files are stored to VFS (path-only injection).
 func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 	userID := msg.From.ID
 	chatID := msg.Chat.ID
@@ -97,6 +100,21 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 		return a.safeReply(ctx, msg, "⚠️ File terlalu besar untuk diproses (maks 10MB).", true)
 	}
 
+	file, err := a.tg.GetFile(ctx, doc.FileID)
+	if err != nil || file.FilePath == "" {
+		return a.safeReply(ctx, msg, "Gagal mengunduh file.", true)
+	}
+	data, err := a.tg.DownloadFile(ctx, file.FilePath)
+	if err != nil {
+		return a.safeReply(ctx, msg, "Gagal mengunduh file.", true)
+	}
+
+	// Gambar tidak pernah ditulis ke VFS: minta ringkasan ke model visi lalu
+	// inject hasilnya bersama prompt user dalam marker [context].
+	if ai.IsImageContent(data) {
+		return a.processImage(ctx, msg, data, caption)
+	}
+
 	var vfsPath, prompt string
 	if idx := strings.Index(caption, " "); idx > 0 && strings.HasPrefix(caption, "/") {
 		vfsPath = strings.TrimPrefix(caption[:idx], "/")
@@ -111,15 +129,6 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 		prompt = caption
 	}
 	vfsPath = firebase.NormalizePath(vfsPath)
-
-	file, err := a.tg.GetFile(ctx, doc.FileID)
-	if err != nil || file.FilePath == "" {
-		return a.safeReply(ctx, msg, "Gagal mengunduh file.", true)
-	}
-	data, err := a.tg.DownloadFile(ctx, file.FilePath)
-	if err != nil {
-		return a.safeReply(ctx, msg, "Gagal mengunduh file.", true)
-	}
 	fileContent := string(data)
 
 	if err := a.vfs.WriteFile(ctx, userID, vfsPath, fileContent); err != nil {
@@ -139,12 +148,7 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 	}
 	hs := messages.CapUserTurns(messages.PruneMessages(stored))
 
-	filePreview := truncateStrIn(fileContent, 4000)
-	injected := fmt.Sprintf("[Uploaded file: /%s]\n```\n%s\n```", vfsPath, filePreview)
-	if prompt != "" {
-		injected += "\n\n" + prompt
-	}
-
+	injected := injectUploadedFile(vfsPath, prompt)
 	res := a.agent.ProcessMessage(ctx, injected, hs, &ai.ProcessOptions{
 		ChatID: userID,
 		SendFile: func(content, filename, caption string) error {
@@ -184,6 +188,160 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 	}
 	a.maybeUpdateMemory(userID, saved)
 	return nil
+}
+
+// handlePhoto processes a native Telegram photo message (not sent as a
+// document). The largest resolution is downloaded and processed exactly like
+// an image document: summarised by the vision model, never stored to VFS.
+// In groups a photo is only processed when its caption starts with "/ai".
+func (a *App) handlePhoto(ctx context.Context, msg *telegram.Message) error {
+	caption := strings.TrimSpace(msg.Caption)
+	if a.isGroup(msg) {
+		if !strings.HasPrefix(caption, "/ai") {
+			return nil
+		}
+		caption = strings.TrimSpace(strings.TrimPrefix(caption, "/ai"))
+	}
+	photo := largestPhoto(msg.Photo)
+	if photo == nil {
+		return nil
+	}
+	if photo.FileSize > maxUploadSize {
+		return a.safeReply(ctx, msg, "⚠️ Foto terlalu besar untuk diproses (maks 10MB).", true)
+	}
+	file, err := a.tg.GetFile(ctx, photo.FileID)
+	if err != nil || file.FilePath == "" {
+		return a.safeReply(ctx, msg, "Gagal mengunduh foto.", true)
+	}
+	data, err := a.tg.DownloadFile(ctx, file.FilePath)
+	if err != nil {
+		return a.safeReply(ctx, msg, "Gagal mengunduh foto.", true)
+	}
+	return a.processImage(ctx, msg, data, caption)
+}
+
+// processImage handles an image upload (photo or image document) end-to-end:
+// the image is never written to VFS — instead the vision model summarises it
+// (description + any visible text) and the summary is injected together with
+// the user's prompt inside a [context] marker.
+func (a *App) processImage(ctx context.Context, msg *telegram.Message, data []byte, prompt string) error {
+	userID := msg.From.ID
+	chatID := msg.Chat.ID
+
+	thID, err := a.sendThinking(ctx, msg, "🤔 PURU-AI sedang melihat gambar...")
+	if err != nil {
+		return err
+	}
+
+	endpoint := ""
+	if a.cfg != nil {
+		endpoint = a.cfg.VisionModelURL
+	}
+	summary, err := ai.DescribeImage(ctx, a.agent.HTTP, endpoint, imageVisionPrompt, data, "")
+	if err != nil {
+		_ = a.tg.DeleteMessage(ctx, chatID, thID)
+		return a.safeReply(ctx, msg, "⚠️ Gagal menganalisis gambar: "+err.Error(), true)
+	}
+	if len(summary) > maxImageContextChars {
+		summary = summary[:maxImageContextChars] + "\n…[hasil dipotong]"
+	}
+	injected := buildImageContext(summary, prompt)
+
+	stored, err := a.hist.GetHistory(ctx, userID)
+	if err != nil {
+		return err
+	}
+	hs := messages.CapUserTurns(messages.PruneMessages(stored))
+
+	res := a.agent.ProcessMessage(ctx, injected, hs, &ai.ProcessOptions{
+		ChatID: userID,
+		SendFile: func(content, filename, caption string) error {
+			opts := map[string]any{}
+			c := caption
+			if c == "" {
+				c = filename
+			}
+			opts["caption"] = c
+			_, err := a.tg.SendFile(ctx, chatID, filename, []byte(content), "sendDocument", opts)
+			return err
+		},
+		SendBuffer: func(data []byte, filename, caption string) error {
+			return a.sendBuffer(ctx, msg, data, filename, caption)
+		},
+	})
+
+	saved := make([]*messages.Message, 0, len(hs)+1+len(res.ResponseMessages))
+	saved = append(saved, hs...)
+	userMsg := &messages.Message{Role: "user"}
+	messages.SetContentString(userMsg, injected)
+	saved = append(saved, userMsg)
+	saved = append(saved, messages.SanitizeHistoryMessages(res.ResponseMessages)...)
+
+	_ = a.hist.SetHistory(ctx, userID, saved)
+	_ = a.hist.SetTokens(ctx, userID, &history.Tokens{
+		Total:  res.LastStepUsage.TotalTokens,
+		Input:  res.LastStepUsage.InputTokens,
+		Output: res.LastStepUsage.OutputTokens,
+	})
+
+	if err := a.safeSend(ctx, msg, res.Text); err != nil {
+		log.Printf("[app] send image reply failed: %v", err)
+	}
+	if err := a.tg.DeleteMessage(ctx, chatID, thID); err != nil {
+		log.Printf("[app] delete thinking message failed: %v", err)
+	}
+	a.maybeUpdateMemory(userID, saved)
+	return nil
+}
+
+// imageVisionPrompt asks the vision model to summarise an uploaded image and
+// report any text shown in it, so the agent gets a self-contained context.
+const imageVisionPrompt = "Ringkas gambar ini secara singkat dalam Bahasa Indonesia, lalu sebutkan teks apa saja yang terlihat atau ditampilkan di dalam gambar tersebut."
+
+// maxImageContextChars caps how much vision-model summary is injected, keeping
+// a single image context within the same order of magnitude as a chat message.
+const maxImageContextChars = 4_000
+
+// buildImageContext wraps a vision-model summary and the user's prompt inside
+// the [context] marker injected into the agent as the user message.
+func buildImageContext(summary, prompt string) string {
+	injected := "[context]\n" + strings.TrimSpace(summary)
+	if p := strings.TrimSpace(prompt); p != "" {
+		injected += "\n\n" + p
+	}
+	return injected
+}
+
+// injectUploadedFile builds the user-message body injected into the agent for
+// a stored (non-image) user-uploaded file: a clean VFS path pointer plus the
+// user's prompt. Content is never previewed — the AI reads the file itself via
+// read_file. Images never reach VFS; they go through processImage instead.
+func injectUploadedFile(vfsPath, prompt string) string {
+	injected := fmt.Sprintf("[User mengupload file: /%s]", vfsPath)
+	if prompt != "" {
+		injected += "\n\n" + prompt
+	}
+	return injected
+}
+
+// largestPhoto returns the highest-resolution entry of a Telegram photo
+// message (largest by pixel area, falling back to file size).
+func largestPhoto(photos []telegram.PhotoSize) *telegram.PhotoSize {
+	var best *telegram.PhotoSize
+	for i := range photos {
+		p := &photos[i]
+		if best == nil || photoArea(p) > photoArea(best) {
+			best = p
+		}
+	}
+	return best
+}
+
+func photoArea(p *telegram.PhotoSize) int64 {
+	if p.Width > 0 && p.Height > 0 {
+		return int64(p.Width) * int64(p.Height)
+	}
+	return p.FileSize
 }
 
 // ---------------------------------------------------------------------------
@@ -227,11 +385,4 @@ func (a *App) updateMemoryAsync(ctx context.Context, userID int64, msgs []*messa
 	} else if updated != "" {
 		log.Printf("Memory updated for user %d (turn %d)", userID, turns)
 	}
-}
-
-func truncateStrIn(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
 }

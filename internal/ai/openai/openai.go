@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,7 +62,7 @@ func (c *Client) Call(ctx context.Context, prompt string, options ...llms.CallOp
 // wireMessage is one message in the chat.completions request body.
 type wireMessage struct {
 	Role         string         `json:"role"`
-	Content      string         `json:"content,omitempty"`
+	Content      any            `json:"content,omitempty"`
 	Name         string         `json:"name,omitempty"`
 	ToolCalls    []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID   string         `json:"tool_call_id,omitempty"`
@@ -110,14 +111,37 @@ type streamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
-// contentToString renders a message's parts into the wire content string, and
-// collects any tool calls / tool responses into the message.
+// contentToString renders a message's parts into the wire content, and collects
+// any tool calls / tool responses into the message.
+//
+// Text-only messages marshal as a plain string. Messages carrying image parts
+// (llms.BinaryPart) marshal as a content array in OpenAI vision format:
+//
+//	[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]
 func contentToString(parts []llms.ContentPart, msg *wireMessage) {
 	var sb strings.Builder
+	var items []map[string]any
+	hasImage := false
 	for _, p := range parts {
 		switch t := p.(type) {
 		case llms.TextContent:
 			sb.WriteString(t.Text)
+			items = append(items, map[string]any{"type": "text", "text": t.Text})
+		case llms.BinaryContent:
+			if len(t.Data) == 0 {
+				continue
+			}
+			hasImage = true
+			mime := t.MIMEType
+			if mime == "" {
+				mime = sniffImageMIME(t.Data)
+			}
+			items = append(items, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(t.Data),
+				},
+			})
 		case llms.ToolCall:
 			msg.ToolCalls = append(msg.ToolCalls, wireToolCall{
 				ID:   t.ID,
@@ -134,7 +158,28 @@ func contentToString(parts []llms.ContentPart, msg *wireMessage) {
 			// Unknown parts are ignored; they are not representable on the wire.
 		}
 	}
-	msg.Content = sb.String()
+	if hasImage {
+		msg.Content = items
+	} else {
+		msg.Content = sb.String()
+	}
+}
+
+// sniffImageMIME guesses a content type from image magic bytes; falls back to
+// application/octet-stream for anything unrecognised.
+func sniffImageMIME(data []byte) string {
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		return "image/png"
+	case len(data) >= 3 && bytes.Equal(data[:3], []byte{0xFF, 0xD8, 0xFF}):
+		return "image/jpeg"
+	case len(data) >= 4 && bytes.Equal(data[:4], []byte{'G', 'I', 'F', '8'}):
+		return "image/gif"
+	case len(data) >= 12 && bytes.Equal(data[:4], []byte{'R', 'I', 'F', 'F'}) && bytes.Equal(data[8:12], []byte{'W', 'E', 'B', 'P'}):
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func callName(t llms.ToolCall) string {
@@ -257,9 +302,17 @@ type wireResponse struct {
 	} `json:"usage"`
 }
 
+type wireRespMessage struct {
+	Role         string         `json:"role"`
+	Content      string         `json:"content"`
+	ToolCalls    []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID   string         `json:"tool_call_id,omitempty"`
+	FunctionCall *wireFuncCall  `json:"function_call,omitempty"`
+}
+
 type wireChoice struct {
-	Message      wireMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
+	Message      wireRespMessage `json:"message"`
+	FinishReason string          `json:"finish_reason"`
 }
 
 // roundTrip performs the HTTP request and returns a fully assembled

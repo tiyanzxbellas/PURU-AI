@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/jsrun"
+	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 )
 
@@ -36,6 +37,7 @@ func BuildTools(a *Agent, opts *ProcessOptions) map[string]*Tool {
 		"calculate_math", "e2b_sandbox_create", "e2b_run_code", "e2b_install_package",
 		"e2b_send_file", "e2b_sandbox_kill", "create_skill", "use_skills",
 		"delete_skill", "search_skills", "install_skill",
+		"schedule_task", "list_schedules", "cancel_schedule",
 	}
 	m := make(map[string]*Tool, len(names))
 	for _, n := range names {
@@ -404,6 +406,73 @@ var toolRunners = map[string]func(ctx context.Context, e *toolEnv, a map[string]
 		}
 		return map[string]any{"success": res.Success, "error": res.Error, "name": res.Name, "path": res.Path, "warning": res.Warning}, nil
 	},
+
+	"schedule_task": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
+		if e.agent.ScheduleTask == nil {
+			return map[string]any{"error": "scheduler not configured"}, nil
+		}
+		prompt := argStr(a, "prompt")
+		at := argStr(a, "at")
+		tz, _ := argOpt(a, "timezone")
+		if prompt == "" {
+			return map[string]any{"error": "prompt tidak boleh kosong"}, nil
+		}
+		if at == "" {
+			return map[string]any{"error": "parameter at (waktu) wajib diisi"}, nil
+		}
+		runAt, usedTZ, err := scheduler.ParseAt(at, tz)
+		if err != nil {
+			return map[string]any{"error": "gagal parse waktu: " + err.Error()}, nil
+		}
+		task, err := e.agent.ScheduleTask(ctx, e.opts.ChatID, prompt, runAt, usedTZ)
+		if err != nil {
+			return map[string]any{"error": err.Error()}, nil
+		}
+		return map[string]any{
+			"success":  true,
+			"id":       task.ID,
+			"run_at":   task.RunAtISO,
+			"timezone": task.Timezone,
+			"message":  "Tugas terjadwal akan dijalankan otomatis pada waktu yang ditentukan. Hasil akan dikirim ke private chat Anda.",
+		}, nil
+	},
+
+	"list_schedules": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
+		if e.agent.ListSchedules == nil {
+			return map[string]any{"error": "scheduler not configured"}, nil
+		}
+		tasks, err := e.agent.ListSchedules(ctx, e.opts.ChatID)
+		if err != nil {
+			return map[string]any{"error": err.Error()}, nil
+		}
+		type taskOut struct {
+			ID       string `json:"id"`
+			Prompt   string `json:"prompt"`
+			RunAt    string `json:"run_at"`
+			Timezone string `json:"timezone"`
+			Status   string `json:"status"`
+		}
+		out := make([]taskOut, 0, len(tasks))
+		for _, t := range tasks {
+			out = append(out, taskOut{ID: t.ID, Prompt: t.Prompt, RunAt: t.RunAtISO, Timezone: t.Timezone, Status: t.Status})
+		}
+		return map[string]any{"tasks": out, "count": len(out)}, nil
+	},
+
+	"cancel_schedule": func(ctx context.Context, e *toolEnv, a map[string]any) (any, error) {
+		if e.agent.CancelSchedule == nil {
+			return map[string]any{"error": "scheduler not configured"}, nil
+		}
+		id := argStr(a, "id")
+		if id == "" {
+			return map[string]any{"error": "id jadwal wajib diisi"}, nil
+		}
+		err := e.agent.CancelSchedule(ctx, e.opts.ChatID, id)
+		if err != nil {
+			return map[string]any{"error": err.Error()}, nil
+		}
+		return map[string]any{"success": true, "message": "Jadwal berhasil dibatalkan"}, nil
+	},
 }
 
 func lastPathSegment(path, fallback string) string {
@@ -457,6 +526,9 @@ var toolDescriptions = map[string]string{
 	"delete_skill":        "Menghapus skill dari /skills/ virtual file system.",
 	"search_skills":       "Mencari skill dari GitHub (code search) dan ClawHub berdasarkan kata kunci.",
 	"install_skill":       "Menginstall skill. url bisa berupa slug/URL GitHub (mis. openclaw/openclaw) atau target ClawHub dengan prefix clawhub: (mis. clawhub:weather).",
+	"schedule_task":       "Menjadwalkan tugas sekali jalan di masa depan. prompt = instruksi yang akan dijalankan agent (wajib); at = waktu eksekusi (wajib, format: '19:00' | '2026-08-15 19:00' | '2026-08-15T19:00:00+07:00'); timezone = IANA timezone opsional (default UTC). Contoh: at='19:00', timezone='Asia/Jakarta' → jam 7 WIB hari ini/besok. Hasil dikirim ke private chat user.",
+	"list_schedules":      "Melihat daftar jadwal tugas milik user (id, prompt, waktu, status).",
+	"cancel_schedule":     "Membatalkan jadwal tugas pending milik user. id = ID jadwal dari list_schedules (wajib).",
 }
 
 var toolSchemas = map[string]map[string]any{}
@@ -551,5 +623,14 @@ func init() {
 	})
 	toolSchemas["install_skill"] = obj([]string{"url"}, map[string]any{
 		"url": sp(`Target install: slug/URL GitHub berisi skill (contoh: "user/repo", "https://github.com/user/repo") atau target ClawHub dengan prefix clawhub: (contoh: "clawhub:weather").`),
+	})
+	toolSchemas["schedule_task"] = obj([]string{"prompt", "at"}, map[string]any{
+		"prompt":   sp(`Instruksi lengkap yang akan dijalankan agent saat waktu tiba (contoh: "Cari informasi terkini tentang AI dan ringkas dalam 3 poin").`),
+		"at":       sp(`Waktu eksekusi. Format: "19:00" (hari ini/besok di timezone), "2026-08-15 19:00" (datetime naive di timezone), "2026-08-15T19:00:00+07:00" (RFC3339 dengan offset).`),
+		"timezone": sp(`Zona waktu IANA (contoh: "Asia/Jakarta", "UTC"). Default: UTC. Digunakan untuk format waktu tanpa offset.`),
+	})
+	toolSchemas["list_schedules"] = obj(nil, map[string]any{})
+	toolSchemas["cancel_schedule"] = obj([]string{"id"}, map[string]any{
+		"id": sp("ID jadwal yang akan dibatalkan (dapatkan dari list_schedules)."),
 	})
 }

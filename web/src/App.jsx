@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import Drawer from './components/Drawer'
+import Boot from './components/Boot'
 import ConfigPanel from './components/ConfigPanel'
 import ModelPanel from './components/ModelPanel'
 import SkillsPanel from './components/SkillsPanel'
+import FilesPanel from './components/FilesPanel'
 import Modal from './components/Modal'
 
 const SECTIONS = [
   { id: 'api', label: 'API Config' },
   { id: 'model', label: 'Model' },
   { id: 'skills', label: 'Skills' },
+  { id: 'files', label: 'Files' },
 ]
 
 export default function App() {
@@ -130,12 +133,19 @@ export default function App() {
   }, [])
 
   return (
-    <>
+    <div className="deck">
+      <div className="crt" aria-hidden="true" />
+      <Boot />
+
       <header className="topbar">
         <button className="hamburger" onClick={() => setMenuOpen(true)} aria-label="Menu">
           &#9776;
         </button>
-        <div className="brand">PURU-AI Settings</div>
+        <div className="brand">PURU<span className="brand-dot">·</span>AI</div>
+        <div className="radar-wrap">
+          <span className="radar" />
+          <span className="radar-lbl">SIGNAL OK</span>
+        </div>
       </header>
 
       <Drawer
@@ -173,6 +183,14 @@ export default function App() {
             alert={alertModal}
           />
         )}
+
+        {section === 'files' && (
+          <FilesPanel
+            showToast={showToast}
+            confirm={confirmModal}
+            alert={alertModal}
+          />
+        )}
       </main>
 
       <Modal modal={modal} onConfirm={() => closeModal(true)} onCancel={() => closeModal(false)} />
@@ -182,6 +200,8 @@ export default function App() {
           {toast.msg}
         </div>
       )}
-    </>
+
+      <footer className="foot-stamp">SESSION 0xA1 &mdash; RTDB LIVE &middot; 4 CHANNELS &middot; CRT_TERMINAL</footer>
+    </div>
   )
 }

@@ -92,7 +92,7 @@ export default function SkillsPanel({ showToast, confirm, alert }) {
   return (
     <>
       <section className="card">
-        <h2 className="panel-title">Skills</h2>
+        <h2 className="panel-title">Skills <span className="pt-code">/skills</span></h2>
         <label>Search Skills</label>
         <div className="search-row">
           <input
@@ -106,12 +106,12 @@ export default function SkillsPanel({ showToast, confirm, alert }) {
         </div>
         <div style={{ marginTop: 8 }}>
           {searching && (
-            <p style={{ color: '#64748b', fontSize: '.82rem' }}>
+            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
               <span className="spinner"></span> Mencari skill "{query}"...
             </p>
           )}
           {!searching && results !== null && results.length === 0 && (
-            <p style={{ color: '#64748b', fontSize: '.82rem' }}>
+            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
               Tidak ada hasil untuk "{query}".
             </p>
           )}
@@ -141,12 +141,12 @@ export default function SkillsPanel({ showToast, confirm, alert }) {
         <label>Installed Skills</label>
         <div>
           {!loaded && (
-            <p style={{ color: '#64748b', fontSize: '.82rem' }}>
+            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
               <span className="spinner"></span> Memuat daftar skill...
             </p>
           )}
           {loaded && installed.length === 0 && (
-            <em style={{ color: '#64748b' }}>Belum ada skill terpasang.</em>
+            <em style={{ color: '#47845E' }}>Belum ada skill terpasang.</em>
           )}
           {loaded && installed.map((s) => (
             <div key={s.name} className="skill-item">

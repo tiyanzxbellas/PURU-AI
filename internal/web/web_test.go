@@ -20,7 +20,10 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
-// fakeRTDB mimics the Firebase REST semantics the stores rely on.
+// fakeRTDB mimics the Firebase REST semantics the stores rely on: GET of a
+// missing node returns HTTP 200 with "null", PUT replaces the node (wiping any
+// descendant keys, like real RTDB), PATCH merges without touching descendants,
+// and DELETE removes a node.
 type fakeRTDB struct {
 	mu sync.Mutex
 	db map[string]string
@@ -64,7 +67,7 @@ func (f *fakeRTDB) handler() http.Handler {
 			} else {
 				w.Write([]byte("null"))
 			}
-		case http.MethodPut:
+		case http.MethodPut, http.MethodPatch:
 			var body any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -72,6 +75,14 @@ func (f *fakeRTDB) handler() http.Handler {
 			}
 			raw, _ := json.Marshal(body)
 			f.db[key] = string(raw)
+			if r.Method == http.MethodPut {
+				// Real RTDB: PUT replaces the node and removes its children.
+				for k := range f.db {
+					if strings.HasPrefix(k, key+"/") {
+						delete(f.db, k)
+					}
+				}
+			}
 			w.Write([]byte(raw))
 		case http.MethodDelete:
 			delete(f.db, key)
@@ -102,7 +113,7 @@ func newWebEnv(t *testing.T) *webEnv {
 	v := vfs.New(fb)
 	cat := skills.NewCatalog(v)
 	reg := skills.NewRegistry(v, skills.RegistryOptions{})
-	mux := NewMux(am, sm, cat, reg)
+	mux := NewMux(am, sm, cat, reg, v)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &webEnv{am: am, sm: sm, cat: cat, reg: reg, vfs: v, srv: srv}
@@ -387,7 +398,6 @@ func TestConfigPartialModelUpdateKeepsSystemPrompt(t *testing.T) {
 	}
 }
 
-
 func TestAPIAuthRequired(t *testing.T) {
 	env := newWebEnv(t)
 	setupAuth(t, env, 7, "pw")
@@ -399,6 +409,11 @@ func TestAPIAuthRequired(t *testing.T) {
 		"/login/7/wrong/api/skills/search",
 		"/login/7/wrong/api/skills/install",
 		"/login/7/wrong/api/skills/delete",
+		"/login/7/wrong/api/memory",
+		"/login/7/wrong/api/files/list",
+		"/login/7/wrong/api/files/read",
+		"/login/7/wrong/api/files/write",
+		"/login/7/wrong/api/files/delete",
 	} {
 		resp, err := http.Post(env.srv.URL+path, "application/json", strings.NewReader("{}"))
 		if err != nil {
@@ -479,5 +494,215 @@ func TestSkillSearchValidation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty query got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestMemoryGetPut(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 21, "mempw")
+	base := env.srv.URL + "/login/21/mempw/api"
+
+	// initial: not exists
+	resp, err := http.Get(base + "/memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var init struct {
+		OK      bool   `json:"ok"`
+		Exists  bool   `json:"exists"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&init); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !init.OK || init.Exists || init.Content != "" {
+		t.Fatalf("unexpected initial memory: %+v", init)
+	}
+
+	// save
+	body, _ := json.Marshal(map[string]string{"content": "1. User suka kopi\n2. Topik: proyek X"})
+	req, _ := http.NewRequest(http.MethodPost, base+"/memory", bytes.NewReader(body))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save got %d, want 200", resp.StatusCode)
+	}
+
+	// read back via API
+	resp, err = http.Get(base + "/memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		OK      bool   `json:"ok"`
+		Exists  bool   `json:"exists"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !got.Exists || got.Content != "1. User suka kopi\n2. Topik: proyek X" {
+		t.Fatalf("memory not saved: %+v", got)
+	}
+
+	// empty content = delete (null -> not exists)
+	emptyBody, _ := json.Marshal(map[string]string{"content": ""})
+	req, _ = http.NewRequest(http.MethodPost, base+"/memory", bytes.NewReader(emptyBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear got %d, want 200", resp.StatusCode)
+	}
+	resp, err = http.Get(base + "/memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after struct {
+		Exists bool `json:"exists"`
+	}
+	json.NewDecoder(resp.Body).Decode(&after)
+	resp.Body.Close()
+	if after.Exists {
+		t.Fatal("memory should be gone after empty save")
+	}
+}
+
+func TestFilesListReadWriteDelete(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 33, "filepw")
+	base := env.srv.URL + "/login/33/filepw/api"
+
+	ctx := context.Background()
+	if err := env.vfs.WriteFile(ctx, 33, "notes/halo.txt", "isi catatan"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := env.vfs.WriteFile(ctx, 33, "skills/pdf/SKILL.md", "---\nname: pdf\n---\n# PDF"); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	// list root
+	resp, err := http.Get(base + "/files/list?path=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		OK      bool `json:"ok"`
+		Entries []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&root); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !root.OK {
+		t.Fatal("list failed")
+	}
+	names := map[string]string{}
+	for _, e := range root.Entries {
+		names[e.Name] = e.Type
+	}
+	if names["notes"] != "dir" || names["skills"] != "dir" {
+		t.Fatalf("root entries missing dirs: %+v", names)
+	}
+
+	// list subdir
+	resp, err = http.Get(base + "/files/list?path=notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub struct {
+		Entries []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sub); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(sub.Entries) != 1 || sub.Entries[0].Name != "halo.txt" || sub.Entries[0].Type != "file" {
+		t.Fatalf("unexpected subdir listing: %+v", sub.Entries)
+	}
+
+	// read file
+	resp, err = http.Get(base + "/files/read?path=notes/halo.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rd struct {
+		OK      bool   `json:"ok"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rd); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !rd.OK || rd.Content != "isi catatan" {
+		t.Fatalf("read failed: %+v", rd)
+	}
+
+	// read missing -> 404
+	resp, err = http.Get(base + "/files/read?path=tak/ada.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing file got %d, want 404", resp.StatusCode)
+	}
+
+	// write new file
+	body, _ := json.Marshal(map[string]string{"path": "notes/baru.txt", "content": "konten baru"})
+	req, _ := http.NewRequest(http.MethodPost, base+"/files/write", bytes.NewReader(body))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("write got %d, want 200", resp.StatusCode)
+	}
+	if content, ok := env.vfs.ReadFile(ctx, 33, "notes/baru.txt"); !ok || content != "konten baru" {
+		t.Fatalf("file not written via API: ok=%v content=%q", ok, content)
+	}
+
+	// delete file
+	delBody, _ := json.Marshal(map[string]string{"path": "notes/baru.txt", "type": "file"})
+	req, _ = http.NewRequest(http.MethodPost, base+"/files/delete", bytes.NewReader(delBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete got %d, want 200", resp.StatusCode)
+	}
+	if _, ok := env.vfs.ReadFile(ctx, 33, "notes/baru.txt"); ok {
+		t.Fatal("file still exists after delete")
+	}
+
+	// delete dir recursively
+	delDir, _ := json.Marshal(map[string]string{"path": "skills", "type": "dir"})
+	req, _ = http.NewRequest(http.MethodPost, base+"/files/delete", bytes.NewReader(delDir))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete dir got %d, want 200", resp.StatusCode)
+	}
+	if _, ok := env.vfs.ReadFile(ctx, 33, "skills/pdf/SKILL.md"); ok {
+		t.Fatal("skill file still exists after DeleteDir")
 	}
 }

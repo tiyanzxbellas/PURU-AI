@@ -14,7 +14,9 @@ import (
 
 // fakeRTDB replicates the Firebase REST semantics the VFS relies on: a missing
 // node GET returns HTTP 200 with the literal body "null" (not an empty body),
-// PUT stores raw JSON, and DELETE removes a node (missing delete → "null").
+// PUT stores raw JSON and (like real RTDB) REPLACES the whole node — deleting
+// any descendant keys, PATCH merges the given object into the node WITHOUT
+// touching descendants, and DELETE removes a node (missing delete → "null").
 type fakeRTDB struct {
 	mu sync.Mutex
 	db map[string]string // key -> raw JSON value
@@ -61,8 +63,8 @@ func (f *fakeRTDB) handler() http.Handler {
 			} else {
 				w.Write([]byte("null"))
 			}
-		case http.MethodPut:
-			// The VFS PUTs both string file bodies ("halo") and index objects
+		case http.MethodPut, http.MethodPatch:
+			// The VFS writes both string file bodies ("halo") and index objects
 			// ({"entries":[...]}) — accept any valid JSON.
 			var body any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -71,6 +73,14 @@ func (f *fakeRTDB) handler() http.Handler {
 			}
 			raw, _ := json.Marshal(body)
 			f.db[key] = string(raw)
+			if r.Method == http.MethodPut {
+				// Real RTDB: a PUT replaces the node and removes its children.
+				for k := range f.db {
+					if strings.HasPrefix(k, key+"/") {
+						delete(f.db, k)
+					}
+				}
+			}
 			w.Write([]byte(raw))
 		case http.MethodDelete:
 			delete(f.db, key)
@@ -216,5 +226,36 @@ func TestDeleteDirRemovesOrphanedContent(t *testing.T) {
 	}
 	if entries := v.ListDirectory(ctx, 1, "skills"); len(entries) != 0 {
 		t.Errorf("skills dir still listed after DeleteDir: %v", entries)
+	}
+}
+
+func TestWriteIndexPatchKeepsSubdirIndices(t *testing.T) {
+	v := testVFS(t)
+	ctx := context.Background()
+
+	// Install a nested skill, then write an unrelated root-level path. Both go
+	// through writeIndex on the ROOT index node (via ensureAncestors). With a
+	// plain PUT the root write would replace fs/{id}/index and wipe every
+	// per-directory index node below it — making every folder list empty.
+	// Regression: writeIndex must PATCH (merge) so the children survive.
+	if err := v.WriteFile(ctx, 1, "skills/pdf/SKILL.md", "konten skill"); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := v.WriteFile(ctx, 1, "memory/MEMORY.md", "1. ingatan"); err != nil {
+		t.Fatalf("write memory: %v", err)
+	}
+
+	if entries := v.ListDirectory(ctx, 1, "skills/pdf"); len(entries) != 1 || entries[0].Name != "SKILL.md" {
+		t.Fatalf("subdir listing wiped by later root write: skills/pdf = %v", entries)
+	}
+	if entries := v.ListDirectory(ctx, 1, "skills"); len(entries) != 1 || entries[0].Name != "pdf" {
+		t.Fatalf("skills dir broken: %v", entries)
+	}
+	root := map[string]bool{}
+	for _, e := range v.ListDirectory(ctx, 1, "") {
+		root[e.Name] = true
+	}
+	if !root["skills"] || !root["memory"] {
+		t.Fatalf("root index missing entries: %v", root)
 	}
 }

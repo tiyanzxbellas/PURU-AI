@@ -21,6 +21,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
+	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
@@ -86,12 +87,13 @@ func main() {
 	memSvc.ClientFor = clientFor
 	tg := telegram.New(cfg.TelegramBotToken, hc)
 	authSvc := auth.New(fb)
-	appSvc := app.New(cfg, tg, histStore, vfsSvc, agentSvc, memSvc, catalogSvc, registrySvc)
+	schedSvc := scheduler.New(fb, cfg.SchedulePollSeconds)
+	appSvc := app.New(cfg, tg, histStore, vfsSvc, agentSvc, memSvc, catalogSvc, registrySvc, schedSvc)
 	appSvc.Settings = settingsSvc
 	appSvc.Auth = authSvc
 
 	// Health + web settings server (bind failures are non-fatal for the bot).
-	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc)
+	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc, vfsSvc)
 	go func() {
 		if lerr := srv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			log.Printf("web server: %v", lerr)
@@ -99,6 +101,10 @@ func main() {
 	}()
 
 	ctx := context.Background()
+
+	// Scheduled tasks (one-shot) — result delivered to the user's private chat.
+	appSvc.StartScheduler(ctx)
+
 	me, err := tg.GetMe(ctx)
 	if err != nil {
 		log.Fatalf("Cannot reach Telegram API: %v", err)

@@ -14,7 +14,9 @@ import (
 )
 
 // fakeRTDB mimics the Firebase REST semantics the VFS relies on (missing node
-// GET returns literal "null", PUT stores raw JSON, DELETE removes the node).
+// GET returns literal "null", PUT replaces the node and wipes any descendant
+// keys like real RTDB, PATCH merges without wiping descendants, DELETE removes
+// the node).
 type fakeRTDB struct {
 	mu sync.Mutex
 	db map[string]string
@@ -58,7 +60,7 @@ func (f *fakeRTDB) handler() http.Handler {
 			} else {
 				w.Write([]byte("null"))
 			}
-		case http.MethodPut:
+		case http.MethodPut, http.MethodPatch:
 			var body any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -66,6 +68,13 @@ func (f *fakeRTDB) handler() http.Handler {
 			}
 			raw, _ := json.Marshal(body)
 			f.db[key] = string(raw)
+			if r.Method == http.MethodPut {
+				for k := range f.db {
+					if strings.HasPrefix(k, key+"/") {
+						delete(f.db, k)
+					}
+				}
+			}
 			w.Write([]byte(raw))
 		case http.MethodDelete:
 			delete(f.db, key)

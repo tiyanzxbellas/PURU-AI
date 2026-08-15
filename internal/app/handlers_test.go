@@ -89,6 +89,60 @@ func mockTelegram(t *testing.T, onReq func(r *http.Request)) *telegram.API {
 	return telegram.New("test-token", srv.Client())
 }
 
+// injectUploadedFile must only inject the VFS path marker for a stored
+// non-image upload — never a preview of the file content.
+func TestInjectUploadedFile(t *testing.T) {
+	text := injectUploadedFile("a.txt", "tolong baca")
+	if !strings.Contains(text, "[User mengupload file: /a.txt]") {
+		t.Fatalf("file injection missing marker, got %q", text)
+	}
+	if !strings.Contains(text, "tolong baca") {
+		t.Fatalf("file injection missing prompt, got %q", text)
+	}
+
+	plain := injectUploadedFile("b.txt", "")
+	if plain != "[User mengupload file: /b.txt]" {
+		t.Fatalf("file injection without prompt wrong, got %q", plain)
+	}
+}
+
+// buildImageContext wraps the vision summary + user prompt inside [context].
+func TestBuildImageContext(t *testing.T) {
+	got := buildImageContext("Ada kucing merah dan tulisan 'HELLO'", "apa isinya?")
+	want := "[context]\nAda kucing merah dan tulisan 'HELLO'\n\napa isinya?"
+	if got != want {
+		t.Fatalf("buildImageContext = %q, want %q", got, want)
+	}
+
+	noPrompt := buildImageContext("Ringkasan saja.", "  ")
+	if noPrompt != "[context]\nRingkasan saja." {
+		t.Fatalf("buildImageContext without prompt = %q", noPrompt)
+	}
+}
+
+func TestLargestPhoto(t *testing.T) {
+	photos := []telegram.PhotoSize{
+		{FileID: "small", Width: 100, Height: 100, FileSize: 1000},
+		{FileID: "big", Width: 400, Height: 300, FileSize: 5000},
+		{FileID: "mid", Width: 200, Height: 200, FileSize: 3000},
+	}
+	if got := largestPhoto(photos); got == nil || got.FileID != "big" {
+		t.Fatalf("largestPhoto by area = %+v, want big", got)
+	}
+
+	noDim := []telegram.PhotoSize{
+		{FileID: "a", FileSize: 1},
+		{FileID: "b", FileSize: 9},
+	}
+	if got := largestPhoto(noDim); got == nil || got.FileID != "b" {
+		t.Fatalf("largestPhoto fallback = %+v, want b", got)
+	}
+
+	if got := largestPhoto(nil); got != nil {
+		t.Fatalf("largestPhoto(nil) = %+v, want nil", got)
+	}
+}
+
 func TestHandleTextAIBannedInPrivateChat(t *testing.T) {
 	var sentText string
 	tg := mockTelegram(t, func(r *http.Request) {

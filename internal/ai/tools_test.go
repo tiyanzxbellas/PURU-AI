@@ -92,3 +92,41 @@ func checkRequired(t *testing.T, path string, node map[string]any) {
 		checkRequired(t, path+".items", v)
 	}
 }
+
+// TestBuildToolsRegistersAll verifies every tool with a runner + description +
+// schema is actually exposed via BuildTools. Regression: the scheduler tools
+// (schedule_task/list_schedules/cancel_schedule) had runner & schema defined
+// but were missing from the BuildTools names list, so the provider answered
+// "schedule_task is not a valid tool".
+func TestBuildToolsRegistersAll(t *testing.T) {
+	agent := &Agent{}
+	tools := BuildTools(agent, &ProcessOptions{})
+
+	for name := range toolRunners {
+		if _, ok := tools[name]; !ok {
+			t.Errorf("BuildTools missing %q: runner exists but tool not registered", name)
+		}
+		if toolDescriptions[name] == "" {
+			t.Errorf("tool %q has no description", name)
+		}
+		if toolSchemas[name] == nil {
+			t.Errorf("tool %q has no schema", name)
+		}
+	}
+	for name := range toolSchemas {
+		if _, ok := tools[name]; !ok {
+			t.Errorf("BuildTools missing %q: schema exists but tool not registered", name)
+		}
+	}
+	for name := range tools {
+		if toolRunners[name] == nil {
+			t.Errorf("tool %q registered but has no runner", name)
+		}
+	}
+
+	for _, want := range []string{"schedule_task", "list_schedules", "cancel_schedule"} {
+		if _, ok := tools[want]; !ok {
+			t.Errorf("tool %q must be registered in BuildTools", want)
+		}
+	}
+}

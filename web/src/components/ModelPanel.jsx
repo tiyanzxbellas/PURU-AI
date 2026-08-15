@@ -44,7 +44,7 @@ export default function ModelPanel({ model, onModelChange, showToast }) {
 
   return (
     <section className="card">
-      <h2 className="panel-title">Model</h2>
+      <h2 className="panel-title">Model <span className="pt-code">/model</span></h2>
       <label>Nama Model</label>
       <div className="model-row">
         <input
@@ -61,7 +61,7 @@ export default function ModelPanel({ model, onModelChange, showToast }) {
       </div>
       <label>Daftar Model Siap Pakai</label>
       {saved.length === 0 ? (
-        <em style={{ color: '#64748b', fontSize: '.85rem' }}>
+        <em style={{ color: '#47845E', fontSize: '.85rem' }}>
           Belum ada model. Masukkan nama lalu klik Terapkan.
         </em>
       ) : saved.map((m) => (

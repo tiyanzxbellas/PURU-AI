@@ -4,7 +4,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 
 ## Fitur
 
-- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + klien model OpenAI-compatible sendiri di `internal/ai/openai`) yang menjalankan 21 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib). Model dipanggil **streaming** (`stream:true`) agar generasi panjang tidak kena timeout gateway 503; assembly tool-call SSE diperbaiki sendiri — klien langchaingo v0.1.14 memecah argument tool-call dari gateway yang men-tag tiap fragment (`type:"function"`) menjadi tool call kosong berantai
+- **AI Chat** — agent tool-calling berbasis langchaingo (`agents.Executor` + klien model OpenAI-compatible sendiri di `internal/ai/openai`) yang menjalankan 27 tools; jawaban final = teks alami executor (tanpa tool `finish` wajib). Model dipanggil **streaming** (`stream:true`) agar generasi panjang tidak kena timeout gateway 503; assembly tool-call SSE diperbaiki sendiri — klien langchaingo v0.1.14 memecah argument tool-call dari gateway yang men-tag tiap fragment (`type:"function"`) menjadi tool call kosong berantai. **Upload gambar** (dokumen gambar maupun pesan photo native Telegram) tidak pernah disimpan ke VFS: di-ringkas oleh model visi terpisah (`VISION_MODEL_URL`, format Gemini) lalu hasilnya di-inject ke agent bersama prompt user dalam marker `[context]`; cek visi cepat dengan `cli -image <gambar> <prompt>`. File non-gambar yang di-upload user **tidak pernah di-preview isinya** — disimpan ke VFS dengan penanda path-only `[User mengupload file: /path]`, dibaca AI sendiri via `read_file`
 - **Virtual File System (VFS)** — file system pribadi per user di Firebase (Realtime Database), diakses via AI tools. Node yang hilang (literal `null` dari RTDB) diperlakukan sebagai file **tidak ada** di read & delete — `delete_file` untuk file yang tak ada dilaporkan error, bukan sukses palsu
 - **User Memory** — konteks percakapan & info user di `/memory/MEMORY.md`, di-inject ke system prompt. MEMORY.md di-update otomatis setiap `MEMORY_UPDATE_EVERY` pesan via model langchaingo dan dijaga minimal: maks 5 poin penting + baris topik yang sedang dibahas, info usang/irrelevan dibuang
 - **Anti-Halusinasi** — system prompt melarang klaim tanpa tool call & filler; jawaban final = teks stop natural executor (tanpa tool `finish`/scold); bila AI berhenti tanpa menghasilkan teks, output tidak dipersist ke history dan request dicoba ulang; pesan user yang ambigu/gibberish membuat AI bertanya klarifikasi langsung tanpa tool; `arguments` tool call dinormalisasi jadi JSON objek valid dan tool-call `id` yang dikosongkan provider (mis. gateway Gemini) di-generate deterministik (`call_<n>`) sehingga tool result selalu berpasangan 1:1 dengan tool call-nya (mencegah `400 function response parts ≠ function call parts`)
@@ -13,11 +13,12 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 - **Web Search** — pencarian Yahoo dengan retry (5x exponential backoff)
 - **Web Crawl** — ekstrak data dari website memakai snippet cheerio JavaScript (shim goja di atas goquery); request memakai User-Agent browser agar situs yang memblokir client non-browser (mis. Wikipedia HTTP 403 untuk `Go-http-client/1.1`) tetap bisa di-crawl; snippet boleh berbentuk ekspresi (`$("h1").text()`) maupun statement `return {...};` (dinormalisasi otomatis); URL di-normalisasi dulu (prefix `https://` bila tanpa skema) dan url kosong/invalid/skema non-http(s) mengembalikan error jelas
 - **Math & Time** — evaluasi matematika (goja; hasil non-finite seperti `10/0` → Infinity ditolak sebagai error, bukan dikembalikan ke model) dan tools jam dengan timezone IANA
+- **Scheduled Tasks** — jadwal tugas one-shot yang dijalankan agent lalu hasilnya dikirim ke private chat user via Telegram; timezone default UTC; waktu disimpan sebagai epoch UTC dengan format input fleksibel (RFC3339 ber-offset, datetime naive di timezone, time-only); task overdue langsung jalan saat bot start; task yang sudah selesai/dibatalkan **dihapus dari RTDB** (tidak menumpuk); diakses via AI tools `schedule_task`, `list_schedules`, `cancel_schedule`
 - **Group Chat** — gunakan `/ai <pesan>` di grup (di chat pribadi perintah `/ai` ditolak karena pesan langsung sudah otomatis diproses); semua command juga bisa memakai suffix `@username_bot` (mis. `/menu@nama_bot`). File/dokumen di grup hanya diproses bila caption diawali `/ai`, mis. caption `/ai analisis file ini`
 - **Exponential Backoff** — retry hingga 4 kali (1s→2s→4s→8s) pada API call; error 4xx (selain 408/429) langsung berhenti. Kegagalan balasan AI (toolset build, model tidak tersedia, respon kosong) selalu ditulis ke log dengan prefix `[ai]` (per-attempt + `finish_reason` + alasan akhir) supaya fallback "Maaf, saya tidak bisa merespons saat ini." mudah ditelusuri penyebabnya
 - **Timeouts & Batas Memori** — agent dibatasi total 5 menit, per-tool 2 menit; loop & context tool dijaga langchaingo executor (regresi `context canceled` dijaga unit test); `crawl` max 1.5MB, `read_file` max 30k char, upload <10MB, history di-truncate max 8k char
 - **Markdown Fallback** — retry tanpa parse_mode saat Telegram menolak entitas parse; semua teks keluar di-sanitasi jadi valid UTF-8 (`strings.ToValidUTF8`) agar tidak kena `400 text must be encoded in UTF-8`
-- **Per-user API Config via Web** — `/pw <password>` lalu `/login` untuk link halaman pengaturan web mobile-friendly (`/login/{id}/{pw}`), dibangun dengan **Vite + React** (hasil bundle di-embed ke binary Go). Halaman dipisah jadi section API Config / Model / Skills dengan **hamburger drawer**, konfirmasi/alert memakai **modal custom** + toast auto-dismiss, dan indikator loading yang jelas. Di sana user bisa set base URL/API key (API key **ditampilkan** — halaman diproteksi password), model (**input nama + tombol Terapkan**, daftar model disimpan di **localStorage** dan bisa dipilih/dihapus; **Terapkan/Pilih langsung menyimpan model ke config bot** — tanpa perlu klik Save), inject **system prompt / role** (di-append ke system prompt bawaan), dan mengelola skills (list/search/install/delete). Partial override global via `settings.Effective`; resolusi client per request sehingga aman paralel
+- **Per-user API Config via Web** — `/pw <password>` lalu `/login` untuk link halaman pengaturan web mobile-friendly (`/login/{id}/{pw}`), dibangun dengan **Vite + React** (hasil bundle di-embed ke binary Go). Halaman dipisah jadi section API Config / Model / Skills / Files dengan desain **"CRT_TERMINAL"** (tema terminal CRT retro-futuristik: fosfor hijau di atas hitam tabung, scanline + vignette + radar sweep, boot screen saat awal sesi, window-chrome ala DOS, font **VT323** + **Space Mono**, rail navigasi kiri di desktop + hamburger drawer mobile), konfirmasi/alert memakai **modal custom** + toast auto-dismiss, dan indikator loading yang jelas. Di sana user bisa set base URL/API key (API key **ditampilkan** — halaman diproteksi password), model (**input nama + tombol Terapkan**, daftar model disimpan di **localStorage** dan bisa dipilih/dihapus; **Terapkan/Pilih langsung menyimpan model ke config bot** — tanpa perlu klik Save), inject **system prompt / role** (di-append ke system prompt bawaan), mengelola skills (list/search/install/delete), **melihat & mengedit MEMORY.md** (kosong + Simpan = hapus), dan **menjelajahi file VFS** (breadcrumb folder, baca file, edit & simpan, hapus file/folder dengan konfirmasi). Partial override global via `settings.Effective`; resolusi client per request sehingga aman paralel
 - **Reset terpisah** — `/reset config`, `/reset memory`, `/reset chat` (masing-masing menargetkan data yang berbeda)
 
 > ⚠️ Catatan: API key user disimpan **plaintext** di Firebase RTDB (`settings/<id>`), dan password login web juga **plaintext** di `auth/<id>` (diperlukan karena link `/login/{id}/{pw}` memakai nilai mentahnya). RTDB di sini bernama `PUBLIC_RTDB` — pastikan aturan keamanan database membatasi akses read/write path sensitif.
@@ -38,7 +39,7 @@ Bot Telegram AI berbahasa Go dengan agent tool-calling berbasis langchaingo (`gi
 
 Di **chat pribadi**, kirim pesan langsung untuk mengobrol dengan AI. Di **grup**, gunakan `/ai` diikuti pesan Anda.
 
-Pengaturan API (base URL, API key, model, system prompt/role) dan manajemen skills (list/search/install/delete) kini dikelola lewat **halaman web** (`/login`), bukan lagi command Telegram `/config` & `/skills`. Perintah `/config` & `/skills` diarahkan ke `/login`.
+Pengaturan API (base URL, API key, model, system prompt/role), manajemen skills (list/search/install/delete), memory (`MEMORY.md`) dan file VFS (baca/edit/hapus) kini dikelola lewat **halaman web** (`/login`), bukan lagi command Telegram `/config` & `/skills`. Perintah `/config` & `/skills` diarahkan ke `/login`.
 
 Command lama yang masih tersedia (tidak dipromosikan): `/token`, `/info`, `/reset config`, `/reset memory`.
 
@@ -50,7 +51,7 @@ internal/
 ├── config/             — config loader & validasi env
 ├── telegram/           — klien Bot API (long-poll synchronous, send/edit/upload, download)
 ├── app/                — dispatcher command, busy-guard per-user, pipeline pesan, safe reply/send
-├── ai/                 — agent langchaingo (executor + ChatPromptTemplate + custom agents.Agent) + 21 tools + processMessage (retry & normalisasi arguments)
+├── ai/                 — agent langchaingo (executor + ChatPromptTemplate + custom agents.Agent) + 27 tools + processMessage (retry & normalisasi arguments)
 ├── messages/           — ModelMessage (kompatibel Vercel AI SDK v7), pruneMessages port
 ├── firebase/           — REST RTDB (GET/PUT/DELETE .json, base64url) + ListKeys shallow
 ├── vfs/                — virtual file system per-user (DeleteDir pindai store content/index, tahan index korup)
@@ -63,12 +64,13 @@ internal/
 ├── jsrun/              — goja: cheerio shim + evaluate math
 ├── e2b/                — client E2B murni HTTP (sandbox/execute/files)
 ├── auth/               — password login web per-user di RTDB `auth/{chatID}` (`/pw` & `/login`)
+├── scheduler/           — scheduler tugas one-shot (poll RTDB, parse waktu fleksibel, inject prompt ke agent, kirim hasil ke private chat)
 └── web/                — halaman settings `/login/{id}/{pw}` (mobile-friendly, embed static) + API JSON; menggantikan health/ (JSON health `/` & `/health` dipertahankan)
 ```
 
 ## Tools yang Tersedia untuk AI
 
-list_directory, read_file, write_file, edit_file, delete_file, move_file, send_file, search_web, crawl, get_current_time, calculate_math, e2b_sandbox_create, e2b_run_code, e2b_install_package, e2b_send_file, e2b_sandbox_kill, create_skill, use_skills, delete_skill, search_skills, install_skill.
+list_directory, read_file, write_file, edit_file, delete_file, move_file, send_file, search_web, crawl, get_current_time, calculate_math, e2b_sandbox_create, e2b_run_code, e2b_install_package, e2b_send_file, e2b_sandbox_kill, create_skill, use_skills, delete_skill, search_skills, install_skill, schedule_task, list_schedules, cancel_schedule.
 
 Skema tools memakai JSON-Schema yang valid untuk provider ketat: `required` selalu array saat ada dan dihilangkan bila kosong (dijamin unit test).
 
@@ -130,6 +132,8 @@ Variabel di atas **wajib**. Aplikasi akan keluar dengan error jika ada yang kura
 | `HISTORY_CACHE_TTL` | `600000` | TTL cache dalam ms (default 10 menit) |
 | `MEMORY_UPDATE_EVERY` | `3` | Interval pesan user untuk auto-update MEMORY.md |
 | `MEMORY_MAX_CHARS` | `8000` | Cap konten MEMORY.md saat di-inject ke system prompt |
+| `SCHEDULE_POLL_INTERVAL` | `15` | Interval detik pengecekan scheduler jadwal tugas |
+| `VISION_MODEL_URL` | `https://puruboy-api.vercel.app/api/ai/gemini-v3` | URL model visi (format Gemini) untuk meringkas gambar yang di-upload user |
 | `OPENAI_BASEURL` | `https://betatestervueui2-b.hf.space/v1` | Base URL API OpenAI-compatible (bila kosong dipakai default) |
 | `OPENAI_APIKEY` | `sk-843e3f05f05eacfe-55n2je-f2c2b844` | API key (bila kosong dipakai default) |
 | `OPENAI_MODEL` | `puru` | Nama model (bila kosong dipakai default) |

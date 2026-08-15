@@ -93,6 +93,33 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return nil
 }
 
+// Patch sends an HTTP PATCH, which merges the given object into the node at
+// path without touching its other keys. Unlike PUT (which replaces the whole
+// node and deletes any children), PATCH is required for nodes that live inside
+// a shared parent — the per-directory index nodes under fs/{id}/index would
+// otherwise be wiped every time the root index is written (see vfs.writeIndex).
+func (c *Client) Patch(ctx context.Context, path string, data any) error {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, pathJoin(c.base, path), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("firebase PATCH %s: HTTP %d", path, resp.StatusCode)
+	}
+	return nil
+}
+
 // ListKeys returns the direct child keys of a node via a shallow GET
 // (?shallow=true). Returns nil when the node is absent or the request fails.
 // Used by VFS.DeleteDir to enumerate the content/index stores independently of

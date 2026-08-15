@@ -21,4 +21,10 @@ export const api = {
   searchSkills: (q) => j('POST', API + '/skills/search', { query: q }),
   installSkill: (target) => j('POST', API + '/skills/install', { target }),
   deleteSkill: (name) => j('POST', API + '/skills/delete', { name }),
+  getMemory: () => j('GET', API + '/memory'),
+  saveMemory: (content) => j('POST', API + '/memory', { content }),
+  listFiles: (path) => j('GET', API + '/files/list?path=' + encodeURIComponent(path || '')),
+  readFile: (path) => j('GET', API + '/files/read?path=' + encodeURIComponent(path)),
+  writeFile: (path, content) => j('POST', API + '/files/write', { path, content }),
+  deleteFile: (path, type) => j('POST', API + '/files/delete', { path, type }),
 }

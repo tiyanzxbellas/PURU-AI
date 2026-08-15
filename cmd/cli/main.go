@@ -42,6 +42,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
@@ -54,6 +55,7 @@ const defaultChatID = -777
 // cliApp holds the wired services, mirroring main.go minus Telegram.
 type cliApp struct {
 	cfg      *config.Config
+	hc       *http.Client
 	hist     *history.Store
 	vfs      *vfs.VFS
 	agent    *ai.Agent
@@ -79,6 +81,7 @@ func main() {
 	jsonOut := flag.Bool("json", false, "output satu objek JSON machine-readable ke stdout (text, steps, usage)")
 	dumpDir := flag.String("dump", "", "direktori untuk menyimpan transcript JSON per run (run-<unix>.json)")
 	timeoutDur := flag.Duration("timeout", 0, "batas waktu proses (klien), mis. 5m / 90s; default 0 = tidak dibatasi oleh CLI")
+	imagePath := flag.String("image", "", "kirim file gambar ke model dengan prompt dari argumen (tes dukungan visi model)")
 	flag.Parse()
 
 	_ = godotenv.Load()
@@ -98,6 +101,7 @@ func main() {
 		ClawHubToken: cfg.ClawHubToken,
 	})
 	e2bSvc := e2b.NewManager(cfg.E2BApiKey, cfg.E2BDomain, hc)
+	schedSvc := scheduler.New(fb, cfg.SchedulePollSeconds)
 
 	llm, err := ai.NewModel(cfg.AI.BaseURL, cfg.AI.APIKey, cfg.AI.Model, hc)
 	if err != nil {
@@ -128,11 +132,23 @@ func main() {
 	agentSvc.ToolsBuild = func(opts *ai.ProcessOptions) (map[string]*ai.Tool, error) {
 		return ai.BuildTools(agentSvc, opts), nil
 	}
+	// Wire scheduler hooks (mirrors internal/app.New) so schedule_task /
+	// list_schedules / cancel_schedule are usable from the CLI debug session.
+	agentSvc.ScheduleTask = func(ctx context.Context, userID int64, prompt string, runAt int64, tz string) (*scheduler.Task, error) {
+		return schedSvc.Schedule(ctx, userID, prompt, runAt, tz)
+	}
+	agentSvc.ListSchedules = func(ctx context.Context, userID int64) ([]*scheduler.Task, error) {
+		return schedSvc.List(ctx, userID)
+	}
+	agentSvc.CancelSchedule = func(ctx context.Context, userID int64, id string) error {
+		return schedSvc.Cancel(ctx, userID, id)
+	}
 	memSvc := memory.New(llm, vfsSvc)
 	memSvc.ClientFor = clientFor
 
 	app := &cliApp{
 		cfg:      cfg,
+		hc:       hc,
 		hist:     histStore,
 		vfs:      vfsSvc,
 		agent:    agentSvc,
@@ -147,6 +163,10 @@ func main() {
 	}
 
 	ctx := context.Background()
+	if *imagePath != "" {
+		app.probeImage(ctx, *imagePath, strings.Join(flag.Args(), " "))
+		return
+	}
 	if *reset {
 		app.reset(ctx)
 		return
@@ -164,6 +184,21 @@ func (a *cliApp) withTimeout(ctx context.Context) (context.Context, context.Canc
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, a.timeout)
+}
+
+// probeImage sends one image file to the configured vision model (Gemini-style
+// endpoint, see VISION_MODEL_URL) with a prompt and prints the raw answer.
+// Debug helper to verify a vision endpoint works before relying on image uploads.
+func (a *cliApp) probeImage(ctx context.Context, path, prompt string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("read image: %v", err)
+	}
+	text, err := ai.DescribeImage(ctx, a.hc, a.cfg.VisionModelURL, prompt, data, "")
+	if err != nil {
+		log.Fatalf("[vision] error: %v", err)
+	}
+	fmt.Println(text)
 }
 
 func (a *cliApp) oneShot(ctx context.Context, prompt string) {

@@ -18,7 +18,7 @@ export default function ConfigPanel({ config, apiKey, setApiKey, onSave, onClear
 
   return (
     <section className="card">
-      <h2 className="panel-title">API Config</h2>
+      <h2 className="panel-title">API Config <span className="pt-code">/api</span></h2>
       <label>Base URL</label>
       <input
         value={local.baseUrl}

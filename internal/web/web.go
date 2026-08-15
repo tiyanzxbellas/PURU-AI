@@ -17,8 +17,10 @@ import (
 
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
+	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
 //go:embed all:dist
@@ -26,17 +28,17 @@ var distFS embed.FS
 
 // Serve returns an http.Server that mounts the health check on "/" (preserving
 // the existing JSON contract) and the settings page + API under /login/{id}/{pw}.
-func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) *http.Server {
+func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS) *http.Server {
 	srv := &http.Server{
 		Addr:    cfg.Hostname + ":" + itoa(cfg.Port),
-		Handler: NewMux(am, sm, cat, reg),
+		Handler: NewMux(am, sm, cat, reg, v),
 	}
 	return srv
 }
 
 // NewMux builds the HTTP handler with the health check, the login page and the
 // settings API. Exposed separately so tests can exercise the routes directly.
-func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry) http.Handler {
+func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS) http.Handler {
 	mux := http.NewServeMux()
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
@@ -80,6 +82,16 @@ func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *sk
 			apiSkillsInstallHandler(am, reg)(w, r)
 		case "/api/skills/delete":
 			apiSkillsDeleteHandler(am, cat)(w, r)
+		case "/api/memory":
+			apiMemoryHandler(am, v)(w, r)
+		case "/api/files/list":
+			apiFilesListHandler(am, v)(w, r)
+		case "/api/files/read":
+			apiFilesReadHandler(am, v)(w, r)
+		case "/api/files/write":
+			apiFilesWriteHandler(am, v)(w, r)
+		case "/api/files/delete":
+			apiFilesDeleteHandler(am, v)(w, r)
 		default:
 			loginHandler(am, sub)(w, r)
 		}
@@ -441,5 +453,171 @@ func apiSkillsDeleteHandler(am *auth.Manager, cat *skills.Catalog) http.HandlerF
 			return
 		}
 		jsonErr(w, http.StatusNotFound, fmt.Sprintf("Skill %q not found", body.Name))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: memory (MEMORY.md)
+// ---------------------------------------------------------------------------
+
+const memoryPath = "memory/MEMORY.md"
+
+func apiMemoryHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			content, exists := v.ReadFile(r.Context(), id, memoryPath)
+			jsonOK(w, map[string]any{"ok": true, "exists": exists, "content": content})
+		case http.MethodPost:
+			var body struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+				return
+			}
+			if strings.TrimSpace(body.Content) == "" {
+				// kosong = hapus, konsisten dengan perilaku path lain (null = tak ada).
+				if _, err := v.DeleteFile(r.Context(), id, memoryPath); err != nil {
+					jsonErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				jsonOK(w, map[string]any{"ok": true})
+				return
+			}
+			if err := v.WriteFile(r.Context(), id, memoryPath, body.Content); err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			jsonOK(w, map[string]any{"ok": true})
+		default:
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: VFS file browser
+// ---------------------------------------------------------------------------
+
+func apiFilesListHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		path := firebase.NormalizePath(r.URL.Query().Get("path"))
+		entries := v.ListDirectory(r.Context(), id, path)
+		jsonOK(w, map[string]any{"ok": true, "path": path, "entries": entries})
+	}
+}
+
+func apiFilesReadHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		path := firebase.NormalizePath(r.URL.Query().Get("path"))
+		if path == "" {
+			jsonErr(w, http.StatusBadRequest, "Missing path")
+			return
+		}
+		content, exists := v.ReadFile(r.Context(), id, path)
+		if !exists {
+			jsonErr(w, http.StatusNotFound, fmt.Sprintf("File %q not found", path))
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "path": path, "content": content})
+	}
+}
+
+func apiFilesWriteHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		path := firebase.NormalizePath(body.Path)
+		if path == "" {
+			jsonErr(w, http.StatusBadRequest, "Missing path")
+			return
+		}
+		if err := v.WriteFile(r.Context(), id, path, body.Content); err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "path": path})
+	}
+}
+
+func apiFilesDeleteHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		path := firebase.NormalizePath(body.Path)
+		if path == "" {
+			jsonErr(w, http.StatusBadRequest, "Missing path")
+			return
+		}
+		var deleted bool
+		var err error
+		if body.Type == "dir" {
+			deleted, err = v.DeleteDir(r.Context(), id, path)
+		} else {
+			deleted, err = v.DeleteFile(r.Context(), id, path)
+		}
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !deleted {
+			jsonErr(w, http.StatusNotFound, fmt.Sprintf("Path %q not found", path))
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "path": path})
 	}
 }

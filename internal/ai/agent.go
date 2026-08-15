@@ -31,6 +31,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
 	"github.com/purujawa06-bot/PURU-AI/internal/prompt"
+	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
@@ -95,6 +96,10 @@ type Agent struct {
 	// Settings holds per-user API overrides (including SystemPrompt). When set
 	// the agent appends a user-defined system prompt to the base prompt.
 	Settings *settings.Manager
+	// Scheduler hooks for scheduled task execution. Set by app layer.
+	ScheduleTask   func(ctx context.Context, userID int64, prompt string, runAt int64, tz string) (*scheduler.Task, error)
+	ListSchedules  func(ctx context.Context, userID int64) ([]*scheduler.Task, error)
+	CancelSchedule func(ctx context.Context, userID int64, id string) error
 }
 
 // clientFor picks the model for the request's chat: the per-chat resolver when

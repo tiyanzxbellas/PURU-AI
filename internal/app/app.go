@@ -7,19 +7,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/purujawa06-bot/PURU-AI/internal/auth"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
-	"github.com/purujawa06-bot/PURU-AI/internal/auth"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
@@ -40,16 +43,30 @@ type App struct {
 	mem      *memory.Manager
 	catalog  *skills.Catalog
 	registry *skills.Registry
+	sched    *scheduler.Manager
 	Settings *settings.Manager
 	Auth     *auth.Manager
 	busy     sync.Map // set of user IDs with an in-flight request
 	memMu    sync.Map // per-user mutex serializing background memory updates
 }
 
-func New(cfg *config.Config, tg *telegram.API, h *history.Store, v *vfs.VFS, a *ai.Agent, m *memory.Manager, c *skills.Catalog, r *skills.Registry) *App {
-	app := &App{cfg: cfg, tg: tg, hist: h, vfs: v, agent: a, mem: m, catalog: c, registry: r}
+func New(cfg *config.Config, tg *telegram.API, h *history.Store, v *vfs.VFS, a *ai.Agent, m *memory.Manager, c *skills.Catalog, r *skills.Registry, sched *scheduler.Manager) *App {
+	app := &App{cfg: cfg, tg: tg, hist: h, vfs: v, agent: a, mem: m, catalog: c, registry: r, sched: sched}
 	a.ToolsBuild = func(opts *ai.ProcessOptions) (map[string]*ai.Tool, error) {
 		return ai.BuildTools(a, opts), nil
+	}
+	// Wire scheduler hooks
+	if sched != nil {
+		a.ScheduleTask = func(ctx context.Context, userID int64, prompt string, runAt int64, tz string) (*scheduler.Task, error) {
+			return sched.Schedule(ctx, userID, prompt, runAt, tz)
+		}
+		a.ListSchedules = func(ctx context.Context, userID int64) ([]*scheduler.Task, error) {
+			return sched.List(ctx, userID)
+		}
+		a.CancelSchedule = func(ctx context.Context, userID int64, id string) error {
+			return sched.Cancel(ctx, userID, id)
+		}
+		sched.SetRunner(app.runScheduled)
 	}
 	return app
 }
@@ -80,14 +97,14 @@ func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 		return nil
 	}
 	msg := upd.Message
-	if msg.Document == nil && msg.Text == "" {
+	if msg.Document == nil && len(msg.Photo) == 0 && msg.Text == "" {
 		return nil
 	}
 	userID := msg.From.ID
 
 	// Non-AI commands run immediately and are never swallowed by the busy
 	// guard: they don't touch the per-user AI pipeline. Only plain text, /ai
-	// commands and documents are serialized per user.
+	// commands, documents and photos are serialized per user.
 	if msg.Document == nil && isCommandText(msg.Text) {
 		direct, _ := splitCommand(msg.Text)
 		if direct != "/ai" {
@@ -108,6 +125,8 @@ func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 		var err error
 		if msg.Document != nil {
 			err = a.handleDocument(ctx, msg)
+		} else if len(msg.Photo) > 0 {
+			err = a.handlePhoto(ctx, msg)
 		} else {
 			err = a.handleText(ctx, msg)
 		}
@@ -297,4 +316,83 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// runScheduled executes a scheduled task: runs the prompt through the agent
+// and sends the result to the user's private chat (userID == chatID).
+func (a *App) runScheduled(ctx context.Context, task *scheduler.Task) {
+	userID := task.UserID
+	prompt := task.Prompt
+
+	// Create a context with timeout for the scheduled task execution
+	taskCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	// Run the prompt through the agent with empty history (fresh context)
+	// but with MEMORY.md injected via system prompt
+	res := a.agent.ProcessMessage(taskCtx, prompt, nil, &ai.ProcessOptions{
+		ChatID: userID,
+		SendFile: func(content, filename, caption string) error {
+			opts := map[string]any{}
+			c := caption
+			if c == "" {
+				c = filename
+			}
+			opts["caption"] = c
+			_, err := a.tg.SendFile(taskCtx, userID, filename, []byte(content), "sendDocument", opts)
+			return err
+		},
+		SendBuffer: func(data []byte, filename, caption string) error {
+			return a.sendBuffer(taskCtx, &telegram.Message{Chat: &telegram.Chat{ID: userID}}, data, filename, caption)
+		},
+	})
+
+	// Format result message
+	header := "⏰ *Hasil Tugas Terjadwal*\n\n"
+	header += fmt.Sprintf("📋 *Prompt:* %s\n\n", prompt)
+	header += "🤖 *Hasil:*\n"
+	fullText := header + res.Text
+
+	// Send to user's private chat
+	if err := a.sendToPrivateChat(taskCtx, userID, fullText); err != nil {
+		log.Printf("[scheduler] send result to user %d failed: %v", userID, err)
+		task.Error = "Gagal mengirim hasil: " + err.Error()
+		return
+	}
+
+	task.Result = res.Text
+}
+
+// sendToPrivateChat sends a message to user's private chat (userID == chatID).
+// Falls back to file if message too long. Uses markdown with fallback.
+func (a *App) sendToPrivateChat(ctx context.Context, userID int64, text string) error {
+	if len(text) > maxMessageLength {
+		// Send short note + file
+		note := "⚠️ Respon terlalu panjang, dikirim sebagai file."
+		if err := a.sendSimpleMessage(ctx, userID, note); err != nil {
+			return err
+		}
+		_, err := a.tg.SendFile(ctx, userID, "scheduled_result.md", []byte(text), "sendDocument",
+			map[string]any{"caption": "Hasil tugas terjadwal terlalu panjang untuk ditampilkan di chat."})
+		return err
+	}
+	return a.sendSimpleMessage(ctx, userID, text)
+}
+
+func (a *App) sendSimpleMessage(ctx context.Context, chatID int64, text string) error {
+	return a.withMarkdownFallback(func(pm string) error {
+		opts := map[string]any{}
+		if pm != "" {
+			opts["parse_mode"] = pm
+		}
+		_, err := a.tg.SendMessage(ctx, chatID, text, opts)
+		return err
+	})
+}
+
+// StartScheduler starts the scheduler background loop.
+func (a *App) StartScheduler(ctx context.Context) {
+	if a.sched != nil {
+		a.sched.Start(ctx)
+	}
 }

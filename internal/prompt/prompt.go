@@ -59,6 +59,10 @@ Per-user virtual file system:
 - search_skills — search for skills on GitHub
 - install_skill — install a skill from a GitHub URL
 
+- schedule_task — schedule a one-shot task at a future time (prompt = instruction to run, at = time, timezone = IANA zone default UTC). Result sent to user's private chat.
+- list_schedules — list user's scheduled tasks (id, prompt, run time, status).
+- cancel_schedule — cancel a pending scheduled task by id.
+
 ## Conversation Context (MEMORY.md)
 {{.memory}}
 

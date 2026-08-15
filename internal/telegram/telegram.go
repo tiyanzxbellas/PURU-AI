@@ -83,13 +83,23 @@ type Document struct {
 	FileSize int64  `json:"file_size"`
 }
 
+// PhotoSize is one entry of a photo message: Telegram sends the same image in
+// several resolutions; the largest one is what the bot downloads and analyses.
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int64  `json:"file_size"`
+}
+
 type Message struct {
-	MessageID int64     `json:"message_id"`
-	From      *User     `json:"from"`
-	Chat      *Chat     `json:"chat"`
-	Text      string    `json:"text"`
-	Caption   string    `json:"caption"`
-	Document  *Document `json:"document"`
+	MessageID int64       `json:"message_id"`
+	From      *User       `json:"from"`
+	Chat      *Chat       `json:"chat"`
+	Text      string      `json:"text"`
+	Caption   string      `json:"caption"`
+	Document  *Document   `json:"document"`
+	Photo     []PhotoSize `json:"photo"`
 }
 
 // File is the getFile result (used to download documents).

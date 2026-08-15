@@ -14,23 +14,25 @@ type AIConfig struct {
 }
 
 type Config struct {
-	TelegramBotToken  string
-	Hostname          string
-	Port              int
-	PublicBaseURL     string
-	PublicRTDB        string
-	AI                AIConfig
-	E2BApiKey         string
-	E2BDomain         string
-	E2BApiURL         string
-	Temperature       float64
-	MaxLoop           int
-	HistoryCacheMax   int
-	HistoryCacheTTL   int64
-	MemoryUpdateEvery int
-	MemoryMaxChars    int
-	GitHubToken       string
-	ClawHubToken      string
+	TelegramBotToken    string
+	Hostname            string
+	Port                int
+	PublicBaseURL       string
+	PublicRTDB          string
+	AI                  AIConfig
+	E2BApiKey           string
+	E2BDomain           string
+	E2BApiURL           string
+	Temperature         float64
+	MaxLoop             int
+	HistoryCacheMax     int
+	HistoryCacheTTL     int64
+	MemoryUpdateEvery   int
+	MemoryMaxChars      int
+	GitHubToken         string
+	ClawHubToken        string
+	SchedulePollSeconds int
+	VisionModelURL      string
 }
 
 func Load() (*Config, error) {
@@ -53,6 +55,9 @@ func Load() (*Config, error) {
 	const defaultBaseURL = "https://betatestervueui2-b.hf.space/v1"
 	const defaultAPIKey = "sk-843e3f05f05eacfe-55n2je-f2c2b844"
 	const defaultModel = "puru"
+	// Default vision model: Gemini-style endpoint used to summarise user image
+	// uploads (see internal/ai.DescribeImage).
+	const defaultVisionModelURL = "https://puruboy-api.vercel.app/api/ai/gemini-v3"
 
 	port, err := envInt("PORT", 3000)
 	if err != nil {
@@ -86,6 +91,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	schedulePollSeconds, err := envInt("SCHEDULE_POLL_INTERVAL", 15)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		TelegramBotToken: os.Getenv("BOT_TOKEN"),
@@ -98,17 +107,19 @@ func Load() (*Config, error) {
 			APIKey:  envString("OPENAI_APIKEY", defaultAPIKey),
 			Model:   envString("OPENAI_MODEL", defaultModel),
 		},
-		E2BApiKey:         os.Getenv("E2B_APIKEY"),
-		E2BDomain:         os.Getenv("E2B_DOMAIN"),
-		E2BApiURL:         os.Getenv("E2B_API_URL"),
-		Temperature:       temperature,
-		MaxLoop:           maxLoop,
-		HistoryCacheMax:   historyCacheMax,
-		HistoryCacheTTL:   int64(historyCacheTTL),
-		MemoryUpdateEvery: memoryUpdateEvery,
-		MemoryMaxChars:    memoryMaxChars,
-		GitHubToken:       os.Getenv("GITHUB_TOKEN"),
-		ClawHubToken:      os.Getenv("CLAWHUB_APIKEY"),
+		E2BApiKey:           os.Getenv("E2B_APIKEY"),
+		E2BDomain:           os.Getenv("E2B_DOMAIN"),
+		E2BApiURL:           os.Getenv("E2B_API_URL"),
+		Temperature:         temperature,
+		MaxLoop:             maxLoop,
+		HistoryCacheMax:     historyCacheMax,
+		HistoryCacheTTL:     int64(historyCacheTTL),
+		MemoryUpdateEvery:   memoryUpdateEvery,
+		MemoryMaxChars:      memoryMaxChars,
+		GitHubToken:         os.Getenv("GITHUB_TOKEN"),
+		ClawHubToken:        os.Getenv("CLAWHUB_APIKEY"),
+		SchedulePollSeconds: schedulePollSeconds,
+		VisionModelURL:      envString("VISION_MODEL_URL", defaultVisionModelURL),
 	}, nil
 }
 

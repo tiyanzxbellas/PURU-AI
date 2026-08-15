@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -319,5 +320,52 @@ func TestBuildMessagesToolCall(t *testing.T) {
 	}
 	if msgs[1].Role != "tool" || msgs[1].ToolCallID != "call_1" || msgs[1].Content != "ok" {
 		t.Errorf("tool msg = %+v", msgs[1])
+	}
+}
+
+// TestContentToStringImage verifies that a message with a binary (image) part
+// serializes to the OpenAI vision content array with a base64 data URI, while a
+// text-only message stays a plain string.
+func TestContentToStringImage(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03}
+
+	m := &wireMessage{}
+	contentToString([]llms.ContentPart{
+		llms.TextContent{Text: "apa isi gambar ini?"},
+		llms.BinaryContent{MIMEType: "image/png", Data: png},
+	}, m)
+
+	raw, err := json.Marshal(m.Content)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if got := string(raw); !strings.Contains(got, `"type":"text"`) ||
+		!strings.Contains(got, `"type":"image_url"`) ||
+		!strings.Contains(got, wantURL) {
+		t.Fatalf("content = %s, want vision array containing %s", got, wantURL)
+	}
+
+	// MIMEType empty -> sniffed from magic bytes.
+	m2 := &wireMessage{}
+	contentToString([]llms.ContentPart{llms.BinaryContent{Data: png}}, m2)
+	raw2, _ := json.Marshal(m2.Content)
+	if !strings.Contains(string(raw2), "data:image/png;base64,") {
+		t.Fatalf("sniffed content = %s", raw2)
+	}
+
+	// Non-image binary falls back to octet-stream.
+	m3 := &wireMessage{}
+	contentToString([]llms.ContentPart{llms.BinaryContent{Data: []byte("hello")}}, m3)
+	raw3, _ := json.Marshal(m3.Content)
+	if !strings.Contains(string(raw3), "data:application/octet-stream;base64,") {
+		t.Fatalf("octet-stream content = %s", raw3)
+	}
+
+	// Text-only stays a plain string.
+	m4 := &wireMessage{}
+	contentToString([]llms.ContentPart{llms.TextContent{Text: "halo"}}, m4)
+	if m4.Content != "halo" {
+		t.Fatalf("text-only content = %v, want string halo", m4.Content)
 	}
 }

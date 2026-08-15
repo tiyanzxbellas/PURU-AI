@@ -60,7 +60,11 @@ func readIndex(ctx context.Context, fb *firebase.Client, p string) *indexDoc {
 }
 
 func writeIndex(ctx context.Context, fb *firebase.Client, p string, doc *indexDoc) error {
-	return fb.Put(ctx, p, doc)
+	// PATCH (not PUT): in real RTDB a PUT on fs/{id}/index replaces the whole
+	// node and silently deletes the per-directory index children below it
+	// (fs/{id}/index/{b64}), leaving every folder empty. PATCH merges the
+	// "entries" key and keeps those child nodes intact.
+	return fb.Patch(ctx, p, doc)
 }
 
 func ensureAncestors(ctx context.Context, fb *firebase.Client, chatID int64, p string) error {
