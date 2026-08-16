@@ -233,7 +233,7 @@ export default function ProvidersPanel({ config, relayUrl, onModelChange, showTo
                       {st.online ? (
                         <span className="badge badge-success dot">{String(st.models?.length || 0)} models</span>
                       ) : (
-                        <span className="badge badge-error dot">Error{st.error ? ' ' + st.error : ''}</span>
+                        <span className="badge badge-error dot">Failed</span>
                       )}
                       <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); refreshStatus(p) }} title="Refresh models">
                         <span className="ms">refresh</span>
@@ -367,7 +367,14 @@ export default function ProvidersPanel({ config, relayUrl, onModelChange, showTo
                         </div>
                       </>
                     ) : (
-                      <span className="badge badge-error dot">Offline{modal.checkResult.error ? ': ' + modal.checkResult.error : ''}</span>
+                      <div className="flex-col" style={{ gap: 6, minWidth: 0, maxWidth: '100%' }}>
+                        <span className="badge badge-error dot">Offline</span>
+                        {modal.checkResult.error && (
+                          <div className="hint" style={{ wordBreak: 'break-word' }}>
+                            {modal.checkResult.error}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}

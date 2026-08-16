@@ -1,9 +1,7 @@
-// Package combos provides per-user "model combos": a named list of models plus
-// a selection strategy (fallback / round-robin / fusion). A combo lets a user
-// group several model identifiers under one name and pick how the bot uses
-// them, mirroring 9router's Combo & Vision Adapter page. Combos are stored per
-// chat at combos/{chat}/{id} so they are independent of settings/, fs/ and
-// history/.
+// Package combos provides per-user "model combos": a named list of models under
+// one name. The only strategy is fallback — models are tried in order on every
+// retry attempt, mirroring 9router's Combo page. Combos are stored per chat at
+// combos/{chat}/{id} so they are independent of settings/, fs/ and history/.
 package combos
 
 import (
@@ -19,32 +17,20 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 )
 
-// Available strategies.
-const (
-	StrategyFallback   = "fallback"
-	StrategyRoundRobin = "round-robin"
-	StrategyFusion     = "fusion"
-)
+// StrategyFallback is the only selection strategy: try models in order.
+const StrategyFallback = "fallback"
 
-// Combo is a single named model combo.
+// Combo is a single named model combo (fallback only).
 type Combo struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
 	Models   []string `json:"models"`
-	Strategy string   `json:"strategy"` // fallback | round-robin | fusion
-}
-
-// Rotator keeps per-chat selection state. It is safe for concurrent use
-// (parallel users).
-type Rotator struct {
-	mu   sync.Mutex
-	turn map[int64]int // chatID -> next round-robin index
+	Strategy string   `json:"strategy"` // always "fallback"
 }
 
 // Manager reads/writes combos in RTDB with an in-memory cache.
 type Manager struct {
 	fb    *firebase.Client
-	state *Rotator
 	cache map[int64]*cacheEntry
 	mu    sync.Mutex
 	ttl   time.Duration
@@ -58,21 +44,39 @@ type cacheEntry struct {
 func New(fb *firebase.Client, ttl time.Duration) *Manager {
 	return &Manager{
 		fb:    fb,
-		state: &Rotator{turn: map[int64]int{}},
 		cache: map[int64]*cacheEntry{},
 		ttl:   ttl,
 	}
 }
 
 // ModelForActive resolves the effective model for a chat using its active
-// combo (empty string when none / when the combo has no models). fallbackIndex
-// is the current retry attempt-1 (0 = first model) used by fallback/fusion.
-func (m *Manager) ModelForActive(ctx context.Context, chatID int64, fallbackIndex int) string {
+// combo (empty string when none / when the combo has no models). attempt is the
+// 1-based retry attempt (1 = first model): the combo drives the retry loop, so
+// every attempt advances through the combo models in order and an attempt past
+// the end stays on the last model (no wrap-around).
+func (m *Manager) ModelForActive(ctx context.Context, chatID int64, attempt int) string {
 	combo := m.ActiveCombo(ctx, chatID)
 	if combo == nil {
 		return ""
 	}
-	return m.state.ModelFor(chatID, combo, fallbackIndex)
+	return modelForAttempt(combo, attempt)
+}
+
+// modelForAttempt picks the fallback model for a 1-based attempt: attempt 1 →
+// first model, attempt N → Nth model; attempts beyond the list keep the last
+// model (no wrap-around back to the first). Returns "" for a nil/empty combo.
+func modelForAttempt(combo *Combo, attempt int) string {
+	if combo == nil || len(combo.Models) == 0 {
+		return ""
+	}
+	i := attempt - 1
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(combo.Models) {
+		i = len(combo.Models) - 1
+	}
+	return combo.Models[i]
 }
 
 func path(chatID int64) string { return "combos/" + strconv.FormatInt(chatID, 10) }
@@ -137,9 +141,7 @@ func (m *Manager) Upsert(ctx context.Context, chatID int64, in Combo) (Combo, er
 	if in.Name == "" {
 		in.Name = "untitled"
 	}
-	if in.Strategy == "" {
-		in.Strategy = StrategyFallback
-	}
+	in.Strategy = StrategyFallback // combos are fallback-only
 	in.Models = cleanModels(in.Models)
 
 	if in.ID == "" {
@@ -344,44 +346,8 @@ func cloneList(in []Combo) []Combo {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime selection (round-robin / fallback / fusion)
+// Runtime selection (fallback)
 // ---------------------------------------------------------------------------
-
-// ModelFor resolves the effective model for a chat under a combo strategy.
-// fallbackIndex selects the model for fallback/fusion (negative = first).
-// Returns "" when the combo has no models or is nil.
-func (r *Rotator) ModelFor(chatID int64, combo *Combo, fallbackIndex int) string {
-	if combo == nil || len(combo.Models) == 0 {
-		return ""
-	}
-	switch combo.Strategy {
-	case StrategyRoundRobin:
-		r.mu.Lock()
-		i := r.turn[chatID]
-		if i < 0 || i >= len(combo.Models) {
-			i = 0
-		}
-		model := combo.Models[i]
-		r.turn[chatID] = (i + 1) % len(combo.Models)
-		r.mu.Unlock()
-		return model
-	default: // fallback & fusion (fusion falls back to first model)
-		if fallbackIndex < 0 {
-			fallbackIndex = 0
-		}
-		if fallbackIndex >= len(combo.Models) {
-			fallbackIndex = 0
-		}
-		return combo.Models[fallbackIndex]
-	}
-}
-
-// StrategyCount returns the per-chat round-robin usage count (diagnostics).
-func (r *Rotator) StrategyCount(chatID int64) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.turn[chatID]
-}
 
 type errComboNotFound struct{ id string }
 

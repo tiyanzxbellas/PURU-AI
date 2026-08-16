@@ -90,44 +90,32 @@ func TestCloneList(t *testing.T) {
 	}
 }
 
-func TestRotatorRoundRobin(t *testing.T) {
-	r := &Rotator{turn: map[int64]int{}}
-	combo := &Combo{Models: []string{"m1", "m2", "m3"}, Strategy: StrategyRoundRobin}
-	order := []string{}
-	for i := 0; i < 6; i++ {
-		order = append(order, r.ModelFor(7, combo, -1))
+func TestModelForAttemptFallback(t *testing.T) {
+	combo := &Combo{Models: []string{"m1", "m2", "m3"}, Strategy: StrategyFallback}
+	if got := modelForAttempt(combo, 1); got != "m1" {
+		t.Fatalf("attempt 1 = %s", got)
 	}
-	want := []string{"m1", "m2", "m3", "m1", "m2", "m3"}
-	for i := range want {
-		if order[i] != want[i] {
-			t.Fatalf("round robin seq wrong: %v", order)
-		}
+	if got := modelForAttempt(combo, 2); got != "m2" {
+		t.Fatalf("attempt 2 = %s", got)
 	}
-	if r.StrategyCount(7) != 0 {
-		t.Fatalf("count = %d (expect wrapped to 0 after 6 calls / 3 models)", r.StrategyCount(7))
+	if got := modelForAttempt(combo, 3); got != "m3" {
+		t.Fatalf("attempt 3 = %s", got)
 	}
-}
-
-func TestRotatorFallback(t *testing.T) {
-	r := &Rotator{turn: map[int64]int{}}
-	combo := &Combo{Models: []string{"m1", "m2"}, Strategy: StrategyFallback}
-	if got := r.ModelFor(1, combo, -1); got != "m1" {
-		t.Fatalf("first fallback = %s", got)
+	// attempts past the end stay on the last model (no wrap-around).
+	if got := modelForAttempt(combo, 99); got != "m3" {
+		t.Fatalf("attempt overflow = %s", got)
 	}
-	if got := r.ModelFor(1, combo, 1); got != "m2" {
-		t.Fatalf("fallback index 1 = %s", got)
-	}
-	if got := r.ModelFor(1, combo, 99); got != "m1" {
-		t.Fatalf("fallback overflow = %s", got)
+	// zero/negative attempts collapse to the first model.
+	if got := modelForAttempt(combo, 0); got != "m1" {
+		t.Fatalf("attempt 0 = %s", got)
 	}
 }
 
-func TestRotatorEmpty(t *testing.T) {
-	r := &Rotator{turn: map[int64]int{}}
-	if got := r.ModelFor(1, nil, -1); got != "" {
+func TestModelForAttemptEmpty(t *testing.T) {
+	if got := modelForAttempt(nil, 1); got != "" {
 		t.Fatalf("nil combo = %q", got)
 	}
-	if got := r.ModelFor(1, &Combo{Models: nil}, -1); got != "" {
+	if got := modelForAttempt(&Combo{Models: nil}, 1); got != "" {
 		t.Fatalf("empty combo = %q", got)
 	}
 }
@@ -138,7 +126,7 @@ func TestComboJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		t.Fatal(err)
 	}
-	if c.ID != "c1" || c.Name != "My Combo" || c.Strategy != StrategyRoundRobin || len(c.Models) != 2 {
+	if c.ID != "c1" || c.Name != "My Combo" || c.Strategy != "round-robin" || len(c.Models) != 2 {
 		t.Fatalf("bad decode: %+v", c)
 	}
 }

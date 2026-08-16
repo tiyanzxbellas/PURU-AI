@@ -117,7 +117,7 @@ func main() {
 		if u := settingsSvc.Get(ctx, cid); u != nil {
 			aiCfg = settings.Effective(aiCfg, u)
 		}
-		if comboModel := combosSvc.ModelForActive(ctx, cid, ai.ComboAttempt(ctx)-1); comboModel != "" {
+		if comboModel := combosSvc.ModelForActive(ctx, cid, ai.ComboAttempt(ctx)); comboModel != "" {
 			aiCfg.Model = comboModel
 		}
 		if resolved := providersSvc.Resolve(ctx, cid, aiCfg.Model); resolved != nil {
@@ -151,6 +151,7 @@ func main() {
 		Registry:  registrySvc,
 		HTTP:      hc,
 		ClientFor: clientFor,
+		Combos:    combosSvc,
 		Settings:  settingsSvc,
 	}
 	agentSvc.ToolsBuild = func(opts *ai.ProcessOptions) (map[string]*ai.Tool, error) {

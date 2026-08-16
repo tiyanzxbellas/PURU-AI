@@ -2,12 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import ModelSelectModal from './ModelSelectModal'
 
-const STRATEGIES = [
-  { value: 'fallback', label: 'Fallback — try in order' },
-  { value: 'round-robin', label: 'Round Robin — rotate' },
-  { value: 'fusion', label: 'Fusion — panel + judge' },
-]
-
 const EMPTY = { id: '', name: '', models: [] }
 
 export default function CombosPanel({ showToast, confirm, alert }) {
@@ -15,7 +9,6 @@ export default function CombosPanel({ showToast, confirm, alert }) {
   const [active, setActive] = useState('')
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState(null)
-  const [strategy, setStrategy] = useState('fallback')
   const [models, setModels] = useState([])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -36,8 +29,8 @@ export default function CombosPanel({ showToast, confirm, alert }) {
 
   useEffect(() => { load() }, [load])
 
-  const openNew = () => { setDraft(EMPTY); setModels([]); setStrategy('fallback'); setPickerOpen(false) }
-  const openEdit = (c) => { setDraft(c); setModels([...(c.models || [])]); setStrategy(c.strategy || 'fallback'); setPickerOpen(false) }
+  const openNew = () => { setDraft(EMPTY); setModels([]); setPickerOpen(false) }
+  const openEdit = (c) => { setDraft(c); setModels([...(c.models || [])]); setPickerOpen(false) }
 
   const removeModel = (m) => setModels(models.filter((x) => x !== m))
 
@@ -47,7 +40,7 @@ export default function CombosPanel({ showToast, confirm, alert }) {
     if (!name) { showToast('Nama combo wajib diisi', false); return }
     setSaving(true)
     try {
-      const { ok, data } = await api.saveCombo({ id: draft.id, name, models, strategy })
+      const { ok, data } = await api.saveCombo({ id: draft.id, name, models, strategy: 'fallback' })
       if (ok) {
         showToast('Combo "' + name + '" disimpan')
         setDraft(null)
@@ -113,7 +106,7 @@ export default function CombosPanel({ showToast, confirm, alert }) {
           <div className="card-ic"><span className="ms">layers</span></div>
           <div>
             <div className="card-title">Model Combos</div>
-            <div className="card-sub">Fallback: coba model berurutan saat gagal · Round Robin: rotasi · Fusion: panel + judge</div>
+            <div className="card-sub">Fallback: coba model provider berurutan saat gagal (retry otomatis pindah ke model/provider berikutnya di combo)</div>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             {active && (
@@ -127,7 +120,7 @@ export default function CombosPanel({ showToast, confirm, alert }) {
 
         {active && (
           <div className="hint" style={{ marginBottom: 12 }}>
-            Combo aktif: <code>{combos.find((c) => c.id === active)?.name || active}</code> — model dipilih sesuai strategi combo.
+            Combo aktif: <code>{combos.find((c) => c.id === active)?.name || active}</code> — saat model/provider gagal, retry otomatis pindah ke model berikutnya di combo (fallback).
           </div>
         )}
 
@@ -158,7 +151,7 @@ export default function CombosPanel({ showToast, confirm, alert }) {
                     </div>
                   </div>
                   <div className="row-actions">
-                    <span className="badge badge-neutral">{c.strategy || 'fallback'}</span>
+                    <span className="badge badge-neutral">fallback</span>
                     {active === c.id ? (
                       <button className="btn btn-secondary btn-sm" onClick={deactivate}>Aktif</button>
                     ) : (
@@ -196,12 +189,6 @@ export default function CombosPanel({ showToast, confirm, alert }) {
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               />
               <div className="hint">Hanya huruf, angka, -, _ dan .</div>
-
-              <label className="field">Strategi</label>
-              <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-                {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
-              <div className="hint">Fusion saat ini memperlakukan panel sebagai fallback (judge belum tersedia).</div>
 
               <label className="field">Models</label>
               {models.length === 0 ? (

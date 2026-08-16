@@ -27,6 +27,7 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	"github.com/tmc/langchaingo/tools"
 
+	"github.com/purujawa06-bot/PURU-AI/internal/combos"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
@@ -104,6 +105,11 @@ type Agent struct {
 	// own model (from settings) so parallel users never share a mutating
 	// struct.
 	ClientFor func(ctx context.Context, chatID int64) llms.Model
+	// Combos drives combo-fallback retries: when a combo is active, the retry
+	// loop advances through the combo's models in order on every failure
+	// (including 4xx), so the next provider in the combo is actually tried.
+	// Nil means no combo handling (classic single-model retry).
+	Combos *combos.Manager
 	// Settings holds per-user API overrides (including SystemPrompt). When set
 	// the agent appends a user-defined system prompt to the base prompt.
 	Settings *settings.Manager
@@ -679,16 +685,36 @@ func (a *Agent) ProcessMessage(ctx context.Context, userMessage string, history 
 
 	var lastErr error
 	var attempts int
+
+	// Combo fallback drives the retry loop: when a combo is active every failure
+	// — including a 4xx from one provider — advances to the next model in the
+	// combo, so the loop may run for as many attempts as the combo has models
+	// (never fewer than maxRetries). Without a combo, the classic single-model
+	// retry applies (bounded by maxRetries, non-retryable errors are fatal).
+	maxAttempts := maxRetries
+	comboActive := false
+	if a.Combos != nil && opts != nil {
+		if combo := a.Combos.ActiveCombo(ctx, opts.ChatID); combo != nil && len(combo.Models) > 0 {
+			comboActive = true
+			if n := len(combo.Models); n > maxAttempts {
+				maxAttempts = n
+			}
+		}
+	}
+
 retryLoop:
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attempts = attempt
 		run, rerr := a.runOnce(ctx, systemPrompt, history, userMessage, opts, tools, attempt)
 		switch {
 		case rerr != nil:
 			lastErr = rerr
-			log.Printf("[ai] attempt %d/%d failed: %v", attempt, maxRetries, rerr)
-			if isNonRetryableError(rerr) || errors.Is(rerr, errNoModel) {
-				break retryLoop // fatal: retrying will not help
+			log.Printf("[ai] attempt %d/%d failed: %v", attempt, maxAttempts, rerr)
+			if errors.Is(rerr, errNoModel) {
+				break retryLoop // no model at all: retrying will not help
+			}
+			if isNonRetryableError(rerr) && !comboActive {
+				break retryLoop // fatal for a single model; a combo may still succeed
 			}
 		case run.hitStepLimit:
 			return makeResult(stepLimitHint, run.responseMessages, run.totalTokens, run.lastStepUsage, run.lastFinishReason)
@@ -696,10 +722,10 @@ retryLoop:
 			return makeResult(run.finalText, run.responseMessages, run.totalTokens, run.lastStepUsage, run.lastFinishReason)
 		default:
 			lastErr = errors.New("empty final message from AI")
-			log.Printf("[ai] attempt %d/%d empty final text (finish_reason=%q)", attempt, maxRetries, run.lastFinishReason)
+			log.Printf("[ai] attempt %d/%d empty final text (finish_reason=%q)", attempt, maxAttempts, run.lastFinishReason)
 		}
 
-		if attempt < maxRetries {
+		if attempt < maxAttempts {
 			backoff := time.Duration(1000<<uint(attempt-1)) * time.Millisecond
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
@@ -710,7 +736,7 @@ retryLoop:
 		break
 	}
 
-	log.Printf("[ai] reply failed after %d/%d attempts: %v", attempts, maxRetries, lastErr)
+	log.Printf("[ai] reply failed after %d/%d attempts: %v", attempts, maxAttempts, lastErr)
 	return errResult()
 }
 

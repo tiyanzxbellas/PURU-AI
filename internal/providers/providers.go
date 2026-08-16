@@ -53,6 +53,10 @@ type Provider struct {
 	ProxyURL string            `json:"proxyUrl,omitempty"`
 	// Builtin marks the server-default provider (never stored / deletable).
 	Builtin bool `json:"builtin,omitempty"`
+	// Model is only set for the built-in provider: the default gateway model
+	// (e.g. "puru"). The built-in provider lists exactly this one model instead
+	// of fetching the gateway's full /models catalog.
+	Model string `json:"model,omitempty"`
 }
 
 // Model is one model id returned by a provider's /models endpoint.
@@ -119,7 +123,8 @@ func nextID() string { return "p" + strconv.FormatInt(time.Now().UnixNano()/1e6,
 // BuiltinProvider builds the built-in "puru" provider from the server's default
 // AI config (endpoint + key of the default gateway) so it appears in the model
 // picker and can be used in combos. Its ProxyURL is left empty on purpose — it
-// inherits the global/per-user proxy relay setting.
+// inherits the global/per-user proxy relay setting. Its model catalog shows only
+// the default gateway model (Model), not the gateway's full /models list.
 func BuiltinProvider(cfg config.AIConfig) Provider {
 	return Provider{
 		ID:      BuiltinProviderID,
@@ -129,6 +134,7 @@ func BuiltinProvider(cfg config.AIConfig) Provider {
 		APIType: APITypeChat,
 		BaseURL: cfg.BaseURL,
 		APIKey:  cfg.APIKey,
+		Model:   cfg.Model,
 		Builtin: true,
 	}
 }
@@ -475,6 +481,22 @@ func modelsEndpoint(p Provider) string {
 
 func (m *Manager) fetch(ctx context.Context, p Provider) *ModelsResult {
 	start := time.Now()
+
+	// The built-in provider lists exactly its default model ("puru") instead of
+	// hitting the gateway's /models endpoint — the catalog is the single default
+	// model, always online (the real endpoint is checked at request time).
+	if p.Builtin {
+		model := strings.TrimSpace(p.Model)
+		if model == "" {
+			model = BuiltinPrefix
+		}
+		return &ModelsResult{
+			OK:     true,
+			Online: true,
+			Status: http.StatusOK,
+			Models: []Model{{ID: model, Name: model}},
+		}
+	}
 
 	modelURL := modelsEndpoint(p)
 	u, err := url.Parse(modelURL)

@@ -1,6 +1,6 @@
 const PAGES = {
   providers: { title: 'Providers', sub: 'PURU Gateway built-in & OpenAI-compatible endpoints · live /models catalog', icon: 'dns' },
-  combos: { title: 'Combos', sub: 'Group models from providers under one name with a strategy', icon: 'layers' },
+  combos: { title: 'Combos', sub: 'Group models from providers under one name; retry falls back to the next model', icon: 'layers' },
   usage: { title: 'Usage & Tokens', sub: 'Token consumption & request history', icon: 'bar_chart' },
   logs: { title: 'Server Logs', sub: 'Live console output from the bot process', icon: 'terminal' },
   role: { title: 'System Prompt', sub: 'Custom role / instructions for the agent', icon: 'record_voice_over' },

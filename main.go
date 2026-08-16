@@ -81,8 +81,9 @@ func main() {
 			aiCfg = settings.Effective(aiCfg, u)
 		}
 		// An active per-user combo overrides the model name: fallback picks the
-		// model matching the current retry attempt, round-robin rotates.
-		if comboModel := combosSvc.ModelForActive(ctx, chatID, ai.ComboAttempt(ctx)-1); comboModel != "" {
+		// model matching the current retry attempt (1-based), so a failed
+		// attempt advances to the next provider/model in the combo.
+		if comboModel := combosSvc.ModelForActive(ctx, chatID, ai.ComboAttempt(ctx)); comboModel != "" {
 			aiCfg.Model = comboModel
 		}
 		// A "prefix/model-id" reference (registered provider) overrides the
@@ -122,6 +123,7 @@ func main() {
 		Registry:  registrySvc,
 		HTTP:      hc,
 		ClientFor: clientFor,
+		Combos:    combosSvc,
 		Settings:  settingsSvc,
 	}
 	memSvc := memory.New(llm, vfsSvc)
