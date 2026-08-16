@@ -2,10 +2,15 @@ package skills
 
 import (
 	"context"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 	pcskills "github.com/sipeed/picoclaw/pkg/skills"
 )
 
@@ -66,6 +71,73 @@ func TestInstallTargetsRejectedWithoutManager(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Fatal("expected an error message")
+	}
+}
+
+// newTestRegistry wires a Registry backed by the fake RTDB VFS.
+func newTestRegistry(t *testing.T) (*Registry, int64) {
+	t.Helper()
+	srv := httptest.NewServer(newFakeRTDB().handler())
+	t.Cleanup(srv.Close)
+	v := vfs.New(firebase.New(srv.URL, srv.Client()))
+	return &Registry{vfs: v}, 1
+}
+
+func writeDiskFile(t *testing.T, tmpDir, rel string, size int) string {
+	t.Helper()
+	p := filepath.Join(tmpDir, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(strings.Repeat("x", size))
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Regression: a skill containing a file above the size limit must not be
+// installed at all — the oversized file is detected BEFORE the first VFS write,
+// so no partial SKILL.md ends up in the list.
+func TestMoveDiskToVFSRejectsOversizedFile(t *testing.T) {
+	r, chatID := newTestRegistry(t)
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	writeDiskFile(t, tmpDir, "SKILL.md", 50)
+	writeDiskFile(t, tmpDir, "scripts/big.bin", 5000)
+
+	err := r.moveDiskToVFS(ctx, tmpDir, chatID, "my-skill", 1000)
+	if err == nil {
+		t.Fatal("expected size-limit error")
+	}
+	if !strings.Contains(err.Error(), "melebihi batas ukuran") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Nothing must have been written to the VFS (no partial install).
+	if entries := r.vfs.ListDirectory(ctx, chatID, "skills"); len(entries) != 0 {
+		t.Fatalf("failed install left entries in skills/: %+v", entries)
+	}
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/my-skill/SKILL.md"); ok {
+		t.Fatal("failed install left SKILL.md behind")
+	}
+}
+
+// A successful install writes the whole tree into the VFS.
+func TestMoveDiskToVFSSuccess(t *testing.T) {
+	r, chatID := newTestRegistry(t)
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	writeDiskFile(t, tmpDir, "SKILL.md", 30)
+	writeDiskFile(t, tmpDir, "scripts/a.py", 40)
+
+	if err := r.moveDiskToVFS(ctx, tmpDir, chatID, "my-skill", 1000); err != nil {
+		t.Fatalf("moveDiskToVFS: %v", err)
+	}
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/my-skill/SKILL.md"); !ok {
+		t.Fatal("SKILL.md not installed")
+	}
+	if _, ok := r.vfs.ReadFile(ctx, chatID, "skills/my-skill/scripts/a.py"); !ok {
+		t.Fatal("scripts/a.py not installed")
 	}
 }
 

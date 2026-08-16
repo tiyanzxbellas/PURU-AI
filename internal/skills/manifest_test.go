@@ -136,6 +136,39 @@ func TestDeleteSkillRemovesWholeTree(t *testing.T) {
 	}
 }
 
+// Regression: the skill list shows the manifest name (frontmatter name or
+// "# title"), which may differ from the installed directory name. Deleting by
+// the displayed name must resolve to the right directory instead of reporting
+// "not found".
+func TestDeleteSkillByDisplayName(t *testing.T) {
+	c := testCatalog(t)
+	ctx := context.Background()
+	v := c.vfs
+	if err := v.WriteFile(ctx, 1, "skills/actual-dir/SKILL.md",
+		"---\nname: fancy-name\n---\n# Fancy Name\nbody"); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	if err := v.WriteFile(ctx, 1, "skills/actual-dir/scripts/x.sh", "echo hi"); err != nil {
+		t.Fatalf("write x.sh: %v", err)
+	}
+	// The list would display "fancy-name", which is not a skills/ subdir.
+	list := c.ListSkills(ctx, 1)
+	if len(list) != 1 || list[0].Name != "fancy-name" {
+		t.Fatalf("ListSkills = %+v", list)
+	}
+
+	deleted, err := c.DeleteSkill(ctx, 1, "fancy-name")
+	if err != nil || !deleted {
+		t.Fatalf("DeleteSkill by display name: deleted=%v err=%v", deleted, err)
+	}
+	if _, ok := v.ReadFile(ctx, 1, "skills/actual-dir/SKILL.md"); ok {
+		t.Error("SKILL.md still present after DeleteSkill by display name")
+	}
+	if entries := v.ListDirectory(ctx, 1, "skills"); len(entries) != 0 {
+		t.Errorf("skill dir not cleaned: %+v", entries)
+	}
+}
+
 func TestDeleteSkillFlatFileAndMissing(t *testing.T) {
 	c := testCatalog(t)
 	ctx := context.Background()

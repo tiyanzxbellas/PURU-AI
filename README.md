@@ -65,7 +65,7 @@ internal/
 ├── providers/          — registry provider per-user ala 9router (RTDB `providers/{chat}`): CRUD, live `/models` fetch (status ONLINE + catalog), `Resolve` `prefix/model-id` → provider config untuk `clientFor` + **provider built-in `puru`** (prefix `puru`, tidak bisa dihapus). Hanya OpenAI-compatible (Anthropic dihapus)
 ├── servelog/           — ring buffer log in-memory (Server Logs di halaman web)
 ├── tokens/             — tiktoken-go (o200k_base)
-├── skills/             — loader/manifest SKILL.md + registry manager (import logika `pkg/skills` picoclaw: code search, install disk→VFS, builtin)
+├── skills/             — loader/manifest SKILL.md + registry manager (import logika `pkg/skills` picoclaw: code search, install disk ke VFS secara atomic - ada file >2MB = install gagal bersih tanpa residu di list, builtin)
 ├── prompt/             — system prompt (text/template, braces di-escape)
 ├── memory/             — auto-update MEMORY.md (model langchaingo)
 ├── jsrun/              — goja: cheerio shim + evaluate math

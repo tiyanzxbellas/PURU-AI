@@ -332,9 +332,38 @@ func (r *Registry) installFromRegistry(ctx context.Context, chatID int64, regist
 }
 
 // moveDiskToVFS walks the temp install dir and writes every file into
-// skills/<dirName>/... in the per-user VFS (files > maxBytes are skipped).
+// skills/<dirName>/... in the per-user VFS. It is atomic: every file is
+// size-checked and read BEFORE the first write, so an oversized file aborts the
+// install without leaving anything behind; if a write still fails mid-way the
+// partially-written subtree is rolled back. A failed install therefore never
+// leaves a half-installed skill visible in the list.
 func (r *Registry) moveDiskToVFS(ctx context.Context, tmpDir string, chatID int64, dirName string, maxBytes int64) error {
-	return filepath.Walk(tmpDir, func(p string, info os.FileInfo, err error) error {
+	files, err := collectDiskFiles(tmpDir, maxBytes)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := r.vfs.WriteFile(ctx, chatID, "skills/"+dirName+"/"+f.rel, f.data); err != nil {
+			// Roll back whatever was already written so the skill does not
+			// appear as (partially) installed.
+			_, _ = r.vfs.DeleteDir(ctx, chatID, "skills/"+dirName)
+			return err
+		}
+	}
+	return nil
+}
+
+type diskFile struct {
+	rel  string
+	data string
+}
+
+// collectDiskFiles reads the whole temp install tree into memory, rejecting any
+// file above maxBytes. Returning an error here happens before any VFS write, so
+// the install aborts cleanly.
+func collectDiskFiles(tmpDir string, maxBytes int64) ([]diskFile, error) {
+	var files []diskFile
+	err := filepath.Walk(tmpDir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -352,8 +381,10 @@ func (r *Registry) moveDiskToVFS(ctx context.Context, tmpDir string, chatID int6
 		if err != nil {
 			return err
 		}
-		return r.vfs.WriteFile(ctx, chatID, "skills/"+dirName+"/"+rel, string(data))
+		files = append(files, diskFile{rel: rel, data: string(data)})
+		return nil
 	})
+	return files, err
 }
 
 type installedOriginMeta struct {

@@ -322,10 +322,42 @@ func (c *Catalog) DeleteSkill(ctx context.Context, chatID int64, name string) (b
 	if deleted {
 		return true, nil
 	}
+	// The skill list shows the manifest name, which can differ from the installed
+	// directory name (the directory is derived from the install target, the
+	// display name from SKILL.md frontmatter/# heading). Delete by display name:
+	// scan skills/ and remove the subtree whose manifest resolves to `name`
+	// (regression: delete reported "not found" for an installed skill).
+	if ok, err := c.deleteByDisplayName(ctx, chatID, name); err != nil || ok {
+		return ok, err
+	}
 	if content, ok := c.vfs.ReadFile(ctx, chatID, "skills/"+name+".md"); ok {
 		_ = content
 		_, err := c.vfs.DeleteFile(ctx, chatID, "skills/"+name+".md")
 		return true, err
+	}
+	return false, nil
+}
+
+// deleteByDisplayName removes the skill subtree whose manifest name matches
+// `name` but whose directory name differs. It mirrors ListSkills's name
+// resolution (frontmatter name, falling back to the directory name) so any
+// skill shown in the list can be deleted by that name.
+func (c *Catalog) deleteByDisplayName(ctx context.Context, chatID int64, name string) (bool, error) {
+	for _, e := range c.vfs.ListDirectory(ctx, chatID, "skills") {
+		if e.Type != "dir" || e.Name == "" {
+			continue
+		}
+		content, ok := c.vfs.ReadFile(ctx, chatID, "skills/"+e.Name+"/SKILL.md")
+		if !ok {
+			continue
+		}
+		skillName := c.ParseFrontmatter(content).Name
+		if skillName == "" {
+			skillName = e.Name
+		}
+		if skillName == name {
+			return c.vfs.DeleteDir(ctx, chatID, "skills/"+e.Name)
+		}
 	}
 	return false, nil
 }
