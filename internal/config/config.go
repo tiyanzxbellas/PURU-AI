@@ -11,6 +11,15 @@ type AIConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// ProxyURL, when non-empty, routes every OpenAI-compatible request through a
+	// 9router-style edge relay (e.g. a Vercel function that forwards to a target
+	// via the x-relay-target / x-relay-path headers). Empty = direct connection.
+	ProxyURL string
+	// Headers are extra HTTP headers sent on every request to the model
+	// endpoint (provider-specific, e.g. the x-opencode-* family). Values
+	// "@session" / "@request" are replaced per chat/per request when the model
+	// client is built.
+	Headers map[string]string
 }
 
 type Config struct {
@@ -58,6 +67,11 @@ func Load() (*Config, error) {
 	// Default vision model: Gemini-style endpoint used to summarise user image
 	// uploads (see internal/ai.DescribeImage).
 	const defaultVisionModelURL = "https://puruboy-api.vercel.app/api/ai/gemini-v3"
+	// Built-in Vercel relay (9router-style edge). Requests are routed through it
+	// by default; the web dashboard exposes a simple Proxy ON/OFF toggle and the
+	// per-user settings.proxyUrl can override/disable it. Change via
+	// PROXY_RELAY_URL to use a different edge.
+	const defaultRelayURL = "https://vercel-relay-ijhklxg99-rikipurpur98-dotcoms-projects.vercel.app/"
 
 	port, err := envInt("PORT", 3000)
 	if err != nil {
@@ -103,9 +117,10 @@ func Load() (*Config, error) {
 		PublicBaseURL:    envString("PUBLIC_BASE_URL", ""),
 		PublicRTDB:       os.Getenv("PUBLIC_RTDB"),
 		AI: AIConfig{
-			BaseURL: envString("OPENAI_BASEURL", defaultBaseURL),
-			APIKey:  envString("OPENAI_APIKEY", defaultAPIKey),
-			Model:   envString("OPENAI_MODEL", defaultModel),
+			BaseURL:  envString("OPENAI_BASEURL", defaultBaseURL),
+			APIKey:   envString("OPENAI_APIKEY", defaultAPIKey),
+			Model:    envString("OPENAI_MODEL", defaultModel),
+			ProxyURL: envString("PROXY_RELAY_URL", defaultRelayURL),
 		},
 		E2BApiKey:           os.Getenv("E2B_APIKEY"),
 		E2BDomain:           os.Getenv("E2B_DOMAIN"),

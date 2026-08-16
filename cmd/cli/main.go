@@ -36,12 +36,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
+	"github.com/purujawa06-bot/PURU-AI/internal/combos"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/providers"
 	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
@@ -93,6 +95,9 @@ func main() {
 
 	fb := firebase.New(cfg.PublicRTDB, hc)
 	settingsSvc := settings.New(fb, 60*time.Second)
+	combosSvc := combos.New(fb, 60*time.Second)
+	providersSvc := providers.New(fb, hc, 60*time.Second)
+	providersSvc.WithBuiltin(providers.BuiltinProvider(cfg.AI))
 	vfsSvc := vfs.New(fb)
 	histStore := history.New(fb, cfg.HistoryCacheMax, cfg.HistoryCacheTTL)
 	catalogSvc := skills.NewCatalog(vfsSvc)
@@ -112,7 +117,26 @@ func main() {
 		if u := settingsSvc.Get(ctx, cid); u != nil {
 			aiCfg = settings.Effective(aiCfg, u)
 		}
-		m, merr := ai.NewModel(aiCfg.BaseURL, aiCfg.APIKey, aiCfg.Model, hc)
+		if comboModel := combosSvc.ModelForActive(ctx, cid, ai.ComboAttempt(ctx)-1); comboModel != "" {
+			aiCfg.Model = comboModel
+		}
+		if resolved := providersSvc.Resolve(ctx, cid, aiCfg.Model); resolved != nil {
+			aiCfg.BaseURL = resolved.Provider.BaseURL
+			aiCfg.APIKey = resolved.Provider.APIKey
+			aiCfg.Model = resolved.Model
+			aiCfg.Headers = resolved.Provider.Headers
+			if resolved.Provider.ProxyURL != "" {
+				aiCfg.ProxyURL = resolved.Provider.ProxyURL
+			}
+		}
+		m, merr := ai.NewModelWithOptions(ai.ModelOptions{
+			BaseURL: aiCfg.BaseURL,
+			APIKey:  aiCfg.APIKey,
+			Model:   aiCfg.Model,
+			Headers: aiCfg.Headers,
+			Proxy:   aiCfg.ProxyURL,
+			Session: ai.ChatSessionID(cid),
+		}, hc)
 		if merr != nil {
 			return llm
 		}

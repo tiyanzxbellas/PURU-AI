@@ -51,12 +51,7 @@ export default function SkillsPanel({ showToast, confirm, alert }) {
         })
         loadSkills()
       } else {
-        await alert({
-          title: 'Gagal Install',
-          message: data.error || 'Terjadi kesalahan saat menginstall skill.',
-          confirmLabel: 'Tutup',
-          danger: true,
-        })
+        await alert({ title: 'Gagal Install', message: data.error || 'Terjadi kesalahan saat menginstall skill.', confirmLabel: 'Tutup', danger: true })
       }
     } catch (e) {
       await alert({ title: 'Error', message: 'Network error: ' + e.message, confirmLabel: 'Tutup', danger: true })
@@ -91,85 +86,86 @@ export default function SkillsPanel({ showToast, confirm, alert }) {
 
   return (
     <>
-      <section className="card">
-        <h2 className="panel-title">Skills <span className="pt-code">/skills</span></h2>
-        <label>Search Skills</label>
-        <div className="search-row">
-          <input
-            value={query}
-            placeholder="keyword..."
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && search()}
-          />
-          <button className="btn btn-primary" onClick={search} disabled={searching || !query.trim()}>Search</button>
-          <button className="btn btn-secondary" onClick={clearResults} disabled={!query && results === null}>Bersihkan</button>
-        </div>
-        <div style={{ marginTop: 8 }}>
-          {searching && (
-            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
-              <span className="spinner"></span> Mencari skill "{query}"...
-            </p>
-          )}
-          {!searching && results !== null && results.length === 0 && (
-            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
-              Tidak ada hasil untuk "{query}".
-            </p>
-          )}
-          {!searching && results && results.map((r) => (
-            <div key={r.target} className="skill-item">
-              <div>
-                <span className="skill-name">{r.displayName || r.slug}</span><br />
-                <span className="skill-desc">
-                  {(r.summary || '').substring(0, 100)}{' '}
-                  <code>[{r.registry || ''}]</code>
-                </span>
-              </div>
-              <button
-                className="btn btn-success"
-                style={{ padding: '4px 8px', fontSize: '.75rem', whiteSpace: 'nowrap' }}
-                onClick={() => install(r.target)}
-                disabled={!!installing}
-              >
-                {installing === r.target ? 'Memasang...' : 'Install'}
-              </button>
+      <div className="card">
+        <div className="card-head">
+          <div className="flex">
+            <div className="card-ic"><span className="ms">extension</span></div>
+            <div>
+              <div className="card-title">Agent Skills</div>
+              <div className="card-sub">Cari di registry, install & kelola skill bot</div>
             </div>
-          ))}
+          </div>
         </div>
-      </section>
+        <div className="card-body">
+          <label className="field">Search Skills</label>
+          <div className="flex" style={{ gap: 8 }}>
+            <input
+              type="text"
+              value={query}
+              placeholder="keyword..."
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && search()}
+            />
+            <button className="btn btn-primary" onClick={search} disabled={searching || !query.trim()}>
+              {searching ? <span className="spinner" /> : <span className="ms">search</span>} Search
+            </button>
+            <button className="btn btn-secondary" onClick={clearResults} disabled={!query && results === null}>Bersihkan</button>
+          </div>
 
-      <section className="card">
-        <label>Installed Skills</label>
-        <div>
-          {!loaded && (
-            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
-              <span className="spinner"></span> Memuat daftar skill...
-            </p>
-          )}
-          {loaded && installed.length === 0 && (
-            <em style={{ color: '#47845E' }}>Belum ada skill terpasang.</em>
-          )}
-          {loaded && installed.map((s) => (
-            <div key={s.name} className="skill-item">
-              <div>
-                <span className="skill-name">{s.name}</span><br />
-                <span className="skill-desc">{s.description || ''}</span>
+          <div className="mt-16">
+            {searching && <div className="muted small"><span className="spinner" /> Mencari skill &quot;{query}&quot;...</div>}
+            {!searching && results !== null && results.length === 0 && (
+              <div className="muted small">Tidak ada hasil untuk &quot;{query}&quot;.</div>
+            )}
+            {!searching && results && results.map((r) => (
+              <div key={r.target} className="row">
+                <div className="row-main">
+                  <div className="row-title"><span className="row-name">{r.displayName || r.slug}</span></div>
+                  <div className="row-desc">{(r.summary || '').substring(0, 100)}{' '}<code>[{r.registry || ''}]</code></div>
+                </div>
+                <div className="row-actions">
+                  <button className="btn btn-success btn-sm" onClick={() => install(r.target)} disabled={!!installing}>
+                    {installing === r.target ? 'Memasang...' : 'Install'}
+                  </button>
+                </div>
               </div>
-              <button
-                className="btn btn-danger"
-                style={{ padding: '4px 8px', fontSize: '.75rem', whiteSpace: 'nowrap' }}
-                onClick={() => del(s.name)}
-                disabled={!!deleting}
-              >
-                {deleting === s.name ? 'Menghapus...' : 'Delete'}
-              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <div className="card-title">Installed Skills</div>
+            <div className="card-sub">{loaded ? installed.length + ' terpasang' : 'Memuat...'}</div>
+          </div>
+        </div>
+        <div className="card-body-sm">
+          {!loaded && <div className="muted small"><span className="spinner" /> Memuat daftar skill...</div>}
+          {loaded && installed.length === 0 && <div className="empty-state"><span className="ms">extension</span><span>Belum ada skill terpasang.</span></div>}
+          {loaded && installed.map((s) => (
+            <div key={s.name} className="row">
+              <div className="row-main">
+                <div className="row-title"><span className="row-name">{s.name}</span></div>
+                <div className="row-desc">{s.description || ''}</div>
+              </div>
+              <div className="row-actions">
+                <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => del(s.name)} disabled={!!deleting}>
+                  <span className="ms">delete</span> {deleting === s.name ? 'Menghapus...' : 'Delete'}
+                </button>
+              </div>
             </div>
           ))}
         </div>
-      </section>
+      </div>
 
       {installing && (
-        <div className="install-bar">
-          <span className="spinner"></span> Menginstall skill "{installing}"...
+        <div className="toast-wrap" style={{ top: 'auto', bottom: 16, right: 16 }}>
+          <div className="toast toast-info">
+            <span className="ms">downloading</span>
+            <div>Menginstall skill &quot;{installing}&quot;...</div>
+          </div>
         </div>
       )}
     </>

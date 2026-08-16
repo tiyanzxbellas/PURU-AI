@@ -23,6 +23,7 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/usage"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
@@ -44,6 +45,9 @@ type App struct {
 	catalog  *skills.Catalog
 	registry *skills.Registry
 	sched    *scheduler.Manager
+	// Usage is optional; when set, every model reply's token usage is recorded
+	// to the usage store (powers the web dashboard Usage section).
+	Usage    *usage.Manager
 	Settings *settings.Manager
 	Auth     *auth.Manager
 	busy     sync.Map // set of user IDs with an in-flight request

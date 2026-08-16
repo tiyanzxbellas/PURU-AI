@@ -132,94 +132,98 @@ export default function FilesPanel({ showToast, confirm, alert }) {
   ]
   return (
     <>
-      <section className="card">
-        <h2 className="panel-title">Memory (MEMORY.md) <span className="pt-code">/mem</span></h2>
-        {!mem.loaded ? (
-          <p style={{ color: '#47845E', fontSize: '.82rem' }}>
-            <span className="spinner"></span> Memuat MEMORY.md...
-          </p>
-        ) : (
-          <>
-            <textarea
-              rows={7}
-              value={mem.content}
-              placeholder="(belum ada isi — auto-update bot akan mengisinya)"
-              onChange={(e) => setMem((m) => ({ ...m, content: e.target.value }))}
-            />
-            <div className="hint">Kosongkan lalu Simpan untuk menghapus MEMORY.md. Bot tetap bisa meng-update-nya otomatis.</div>
-            <button className="btn btn-primary" onClick={saveMemory} disabled={mem.saving}>
-              {mem.saving ? 'Menyimpan...' : 'Simpan'}
-            </button>
-          </>
-        )}
-      </section>
-
-      <section className="card">
-        <h2 className="panel-title">File VFS <span className="pt-code">/fs</span></h2>
-
-        <div className="crumb-row">
-          {crumbs.map((c, i) => (
-            <span key={i}>
-              <a
-                href="javascript:void(0)"
-                className={i === crumbs.length - 1 ? 'crumb crumb-cur' : 'crumb'}
-                onClick={() => navTo(c.path)}
-              >
-                {c.name}
-              </a>
-              {i < crumbs.length - 1 && <span className="crumb-sep">/</span>}
-            </span>
-          ))}
+      <div className="card">
+        <div className="card-head">
+          <div className="flex">
+            <div className="card-ic"><span className="ms">memory</span></div>
+            <div>
+              <div className="card-title">Memory (MEMORY.md)</div>
+              <div className="card-sub">Kosongkan lalu Simpan untuk menghapus; bot tetap auto-update</div>
+            </div>
+          </div>
         </div>
+        <div className="card-body">
+          {!mem.loaded ? (
+            <div className="muted small"><span className="spinner" /> Memuat MEMORY.md...</div>
+          ) : (
+            <>
+              <textarea rows={7} value={mem.content} placeholder="(belum ada isi — auto-update bot akan mengisinya)" onChange={(e) => setMem((m) => ({ ...m, content: e.target.value }))} />
+              <div className="flex mt-16" style={{ justifyContent: 'flex-end' }}>
+                <button className="btn btn-primary" onClick={saveMemory} disabled={mem.saving}>
+                  <span className="ms">save</span> {mem.saving ? 'Menyimpan...' : 'Simpan'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
 
-        <div className="file-list">
-          {loading && (
-            <p style={{ color: '#47845E', fontSize: '.82rem' }}>
-              <span className="spinner"></span> Memuat folder...
-            </p>
-          )}
-          {!loading && entries.length === 0 && (
-            <em style={{ color: '#47845E' }}>Folder kosong.</em>
-          )}
+      <div className="card">
+        <div className="card-head">
+          <div className="flex">
+            <div className="card-ic"><span className="ms">folder_open</span></div>
+            <div>
+              <div className="card-title">File VFS</div>
+              <div className="card-sub">Virtual file system per-user di RTDB</div>
+            </div>
+          </div>
+        </div>
+        <div className="card-body-sm">
+          <div className="flex" style={{ flexWrap: 'wrap', gap: 6, padding: '2px 4px 10px' }}>
+            {crumbs.map((c, i) => (
+              <span key={i} className="flex" style={{ gap: 6 }}>
+                {i > 0 && <span className="muted small">/</span>}
+                <button
+                  className={'chip' + (i === crumbs.length - 1 ? '' : '')}
+                  style={{ border: 'none', cursor: i === crumbs.length - 1 ? 'default' : 'pointer' }}
+                  onClick={() => i < crumbs.length - 1 && navTo(c.path)}
+                >
+                  <span className="ms" style={{ fontSize: 12 }}>{i === crumbs.length - 1 ? 'folder' : 'chevron_right'}</span>
+                  {c.name}
+                </button>
+              </span>
+            ))}
+          </div>
+
+          {loading && <div className="muted small"><span className="spinner" /> Memuat folder...</div>}
+          {!loading && entries.length === 0 && <div className="empty-state"><span className="ms">folder_open</span><span>Folder kosong.</span></div>}
           {!loading && sorted.map((e) => {
             const path = cwd.length ? join([...cwd, e.name]) : e.name
             return (
-              <div key={path} className="file-row">
+              <div key={path} className="row">
                 <button
-                  className="file-name"
+                  className="chip"
+                  style={{ border: 'none', flex: 1, textAlign: 'left', color: 'var(--text-main)' }}
                   onClick={() => (e.type === 'dir' ? navTo([...cwd, e.name]) : openFile(e.name))}
                 >
-                  <span className={e.type === 'dir' ? 'file-ico dir' : 'file-ico'}>{e.type === 'dir' ? '▸' : ''}</span>
+                  <span className="ms" style={{ fontSize: 15, color: e.type === 'dir' ? 'var(--info)' : 'var(--text-muted)' }}>
+                    {e.type === 'dir' ? 'folder' : 'description'}
+                  </span>
                   {e.name}
                 </button>
-                <button
-                  className="btn btn-danger"
-                  style={{ padding: '4px 8px', fontSize: '.75rem', whiteSpace: 'nowrap' }}
-                  onClick={() => del(e)}
-                  disabled={!!deleting}
-                >
-                  {deleting === path ? 'Menghapus...' : 'Hapus'}
-                </button>
+                <div className="row-actions">
+                  <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => del(e)} disabled={!!deleting}>
+                    <span className="ms">delete</span> {deleting === path ? 'Menghapus...' : 'Hapus'}
+                  </button>
+                </div>
               </div>
             )
           })}
         </div>
 
         {file && (
-          <div style={{ marginTop: 10 }}>
-            <label>{file.path}</label>
-            <textarea
-              rows={10}
-              value={file.content}
-              onChange={(e) => setFile((f) => ({ ...f, content: e.target.value }))}
-            />
-            <button className="btn btn-primary" onClick={saveFile} disabled={saving}>
-              {saving ? 'Menyimpan...' : 'Simpan'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setFile(null)}>Tutup</button>
+          <div className="card-body" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <label className="field">{file.path}</label>
+            <textarea rows={10} value={file.content} onChange={(e) => setFile((f) => ({ ...f, content: e.target.value }))} />
+            <div className="flex mt-16" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setFile(null)}>Tutup</button>
+              <button className="btn btn-primary" onClick={saveFile} disabled={saving}>
+                <span className="ms">save</span> {saving ? 'Menyimpan...' : 'Simpan'}
+              </button>
+            </div>
           </div>
         )}
-      </section>
+      </div>
     </>
   )
 }

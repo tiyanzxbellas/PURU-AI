@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,15 +17,19 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/ai"
 	"github.com/purujawa06-bot/PURU-AI/internal/app"
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
+	"github.com/purujawa06-bot/PURU-AI/internal/combos"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/e2b"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/memory"
+	"github.com/purujawa06-bot/PURU-AI/internal/providers"
 	"github.com/purujawa06-bot/PURU-AI/internal/scheduler"
+	"github.com/purujawa06-bot/PURU-AI/internal/servelog"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/usage"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 	"github.com/purujawa06-bot/PURU-AI/internal/web"
 )
@@ -37,6 +42,11 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Server log buffer: the standard log package writes to both stderr and an
+	// in-memory ring so the web dashboard can stream a live console tail.
+	serverLog := servelog.New(1000)
+	log.SetOutput(io.MultiWriter(os.Stderr, serverLog))
+
 	// Shared HTTP client. A browser-like User-Agent is injected on outbound
 	// requests so sites that block non-browser clients (e.g. Wikipedia HTTP
 	// 403 for "Go-http-client/1.1") stay reachable for the crawl tool.
@@ -46,6 +56,10 @@ func main() {
 	settingsSvc := settings.New(fb, 60*time.Second)
 	vfsSvc := vfs.New(fb)
 	histStore := history.New(fb, cfg.HistoryCacheMax, cfg.HistoryCacheTTL)
+	usageSvc := usage.New(fb)
+	combosSvc := combos.New(fb, 60*time.Second)
+	providersSvc := providers.New(fb, hc, 60*time.Second)
+	providersSvc.WithBuiltin(providers.BuiltinProvider(cfg.AI))
 	catalogSvc := skills.NewCatalog(vfsSvc)
 	registrySvc := skills.NewRegistry(vfsSvc, skills.RegistryOptions{
 		GitHubToken:  cfg.GitHubToken,
@@ -66,7 +80,34 @@ func main() {
 		if u := settingsSvc.Get(ctx, chatID); u != nil {
 			aiCfg = settings.Effective(aiCfg, u)
 		}
-		m, merr := ai.NewModel(aiCfg.BaseURL, aiCfg.APIKey, aiCfg.Model, hc)
+		// An active per-user combo overrides the model name: fallback picks the
+		// model matching the current retry attempt, round-robin rotates.
+		if comboModel := combosSvc.ModelForActive(ctx, chatID, ai.ComboAttempt(ctx)-1); comboModel != "" {
+			aiCfg.Model = comboModel
+		}
+		// A "prefix/model-id" reference (registered provider) overrides the
+		// endpoint/key/headers — mirroring 9router provider nodes. Provider wins
+		// over the settings-based endpoint when the prefix is registered. The
+		// proxy relay is only overridden when the provider sets one explicitly,
+		// so the built-in "puru" provider inherits the global/per-user proxy
+		// ON/OFF toggle.
+		if resolved := providersSvc.Resolve(ctx, chatID, aiCfg.Model); resolved != nil {
+			aiCfg.BaseURL = resolved.Provider.BaseURL
+			aiCfg.APIKey = resolved.Provider.APIKey
+			aiCfg.Model = resolved.Model
+			aiCfg.Headers = resolved.Provider.Headers
+			if resolved.Provider.ProxyURL != "" {
+				aiCfg.ProxyURL = resolved.Provider.ProxyURL
+			}
+		}
+		m, merr := ai.NewModelWithOptions(ai.ModelOptions{
+			BaseURL: aiCfg.BaseURL,
+			APIKey:  aiCfg.APIKey,
+			Model:   aiCfg.Model,
+			Headers: aiCfg.Headers,
+			Proxy:   aiCfg.ProxyURL,
+			Session: ai.ChatSessionID(chatID),
+		}, hc)
 		if merr != nil {
 			return llm
 		}
@@ -91,9 +132,10 @@ func main() {
 	appSvc := app.New(cfg, tg, histStore, vfsSvc, agentSvc, memSvc, catalogSvc, registrySvc, schedSvc)
 	appSvc.Settings = settingsSvc
 	appSvc.Auth = authSvc
+	appSvc.Usage = usageSvc
 
 	// Health + web settings server (bind failures are non-fatal for the bot).
-	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc, vfsSvc)
+	srv := web.Serve(cfg, authSvc, settingsSvc, catalogSvc, registrySvc, vfsSvc, usageSvc, serverLog, combosSvc, providersSvc)
 	go func() {
 		if lerr := srv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			log.Printf("web server: %v", lerr)

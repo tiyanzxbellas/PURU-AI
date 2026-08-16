@@ -16,10 +16,14 @@ import (
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
+	"github.com/purujawa06-bot/PURU-AI/internal/combos"
 	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/providers"
+	"github.com/purujawa06-bot/PURU-AI/internal/servelog"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
+	"github.com/purujawa06-bot/PURU-AI/internal/usage"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
@@ -28,17 +32,19 @@ var distFS embed.FS
 
 // Serve returns an http.Server that mounts the health check on "/" (preserving
 // the existing JSON contract) and the settings page + API under /login/{id}/{pw}.
-func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS) *http.Server {
+func Serve(cfg *config.Config, am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS, um *usage.Manager, lg *servelog.Buffer, cb *combos.Manager, pv *providers.Manager) *http.Server {
 	srv := &http.Server{
 		Addr:    cfg.Hostname + ":" + itoa(cfg.Port),
-		Handler: NewMux(am, sm, cat, reg, v),
+		Handler: NewMux(am, sm, cat, reg, v, um, lg, cb, pv, cfg.AI),
 	}
 	return srv
 }
 
 // NewMux builds the HTTP handler with the health check, the login page and the
 // settings API. Exposed separately so tests can exercise the routes directly.
-func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS) http.Handler {
+// aiCfg is the server-wide AI config: its ProxyURL is the built-in relay URL
+// reported to the dashboard (Proxy ON/OFF toggle).
+func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *skills.Registry, v *vfs.VFS, um *usage.Manager, lg *servelog.Buffer, cb *combos.Manager, pv *providers.Manager, aiCfg config.AIConfig) http.Handler {
 	mux := http.NewServeMux()
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
@@ -71,7 +77,7 @@ func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *sk
 		}
 		switch rest {
 		case "/api/config":
-			apiConfigHandler(am, sm)(w, r)
+			apiConfigHandler(am, sm, aiCfg)(w, r)
 		case "/api/config/clear":
 			apiConfigClearHandler(am, sm)(w, r)
 		case "/api/skills/list":
@@ -92,6 +98,22 @@ func NewMux(am *auth.Manager, sm *settings.Manager, cat *skills.Catalog, reg *sk
 			apiFilesWriteHandler(am, v)(w, r)
 		case "/api/files/delete":
 			apiFilesDeleteHandler(am, v)(w, r)
+		case "/api/usage":
+			apiUsageHandler(am, um)(w, r)
+		case "/api/logs":
+			apiLogsHandler(am, lg)(w, r)
+		case "/api/combos":
+			apiCombosHandler(am, cb)(w, r)
+		case "/api/combos/activate":
+			apiCombosActivateHandler(am, cb)(w, r)
+		case "/api/combos/delete":
+			apiCombosDeleteHandler(am, cb)(w, r)
+		case "/api/providers":
+			apiProvidersHandler(am, pv)(w, r)
+		case "/api/providers/check":
+			apiProvidersCheckHandler(am, pv)(w, r)
+		case "/api/providers/delete":
+			apiProvidersDeleteHandler(am, sm, cb, pv)(w, r)
 		default:
 			loginHandler(am, sub)(w, r)
 		}
@@ -220,7 +242,7 @@ func loginHandler(am *auth.Manager, dist fs.FS) http.HandlerFunc {
 // API: config
 // ---------------------------------------------------------------------------
 
-func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
+func apiConfigHandler(am *auth.Manager, sm *settings.Manager, aiCfg config.AIConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := resolveAuth(r, am)
 		if !ok {
@@ -230,10 +252,27 @@ func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet:
 			cfg := sm.Get(r.Context(), id)
-			eff := settings.Effective(config.AIConfig{}, cfg)
+			// The global config passed here only carries the proxy relay so the
+			// effective proxyUrl reflects the built-in relay (ON by default) while
+			// the other fields keep hiding the server defaults.
+			eff := settings.Effective(config.AIConfig{ProxyURL: aiCfg.ProxyURL}, cfg)
 			// API key dikembalikan mentah (permintaan user) — halaman login
 			// diproteksi password sehingga hanya pemilik chat yang bisa lihat.
-			resp := map[string]any{"ok": true, "baseUrl": eff.BaseURL, "apiKey": eff.APIKey, "model": eff.Model}
+			resp := map[string]any{
+				"ok":       true,
+				"baseUrl":  eff.BaseURL,
+				"apiKey":   eff.APIKey,
+				"model":    eff.Model,
+				"proxyUrl": eff.ProxyURL,
+				// relayUrl = built-in Vercel relay URL (global default) — dipakai
+				// dashboard untuk toggle Proxy ON/OFF.
+				"relayUrl": aiCfg.ProxyURL,
+			}
+			if eff.Headers != nil {
+				resp["headers"] = eff.Headers
+			} else {
+				resp["headers"] = map[string]string{}
+			}
 			if cfg != nil && cfg.SystemPrompt != nil {
 				resp["systemPrompt"] = *cfg.SystemPrompt
 			} else {
@@ -242,10 +281,12 @@ func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
 			jsonOK(w, resp)
 		case http.MethodPost:
 			var body struct {
-				BaseURL      *string `json:"baseUrl"`
-				APIKey       *string `json:"apiKey"`
-				Model        *string `json:"model"`
-				SystemPrompt *string `json:"systemPrompt"`
+				BaseURL      *string           `json:"baseUrl"`
+				APIKey       *string           `json:"apiKey"`
+				Model        *string           `json:"model"`
+				SystemPrompt *string           `json:"systemPrompt"`
+				ProxyURL     *string           `json:"proxyUrl"`
+				Headers      map[string]string `json:"headers"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				jsonErr(w, http.StatusBadRequest, "Invalid JSON")
@@ -286,6 +327,25 @@ func apiConfigHandler(am *auth.Manager, sm *settings.Manager) http.HandlerFunc {
 					cfg.SystemPrompt = body.SystemPrompt
 				}
 			}
+			// ProxyURL: nil = jangan sentuh, "" = matikan (langsung ke
+			// endpoint — override global relay), terisi = pakai relay.
+			if body.ProxyURL != nil {
+				if *body.ProxyURL == "" {
+					s := ""
+					cfg.ProxyURL = &s
+				} else {
+					cfg.ProxyURL = body.ProxyURL
+				}
+			}
+			// Headers: nil = jangan sentuh (partial update), {} = hapus semua,
+			// terisi = ganti seluruh set.
+			if body.Headers != nil {
+				if len(body.Headers) == 0 {
+					cfg.Headers = nil
+				} else {
+					cfg.Headers = body.Headers
+				}
+			}
 			if err := sm.Set(r.Context(), id, cfg); err != nil {
 				jsonErr(w, http.StatusInternalServerError, err.Error())
 				return
@@ -308,7 +368,9 @@ func apiConfigClearHandler(am *auth.Manager, sm *settings.Manager) http.HandlerF
 			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
-		if err := sm.Delete(r.Context(), id); err != nil {
+		// Reset keeps the user's SystemPrompt (custom role); only the AI
+		// connection fields (base URL, key, model, proxy, headers) are cleared.
+		if err := sm.DeleteKeepPrompt(r.Context(), id); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -619,5 +681,371 @@ func apiFilesDeleteHandler(am *auth.Manager, v *vfs.VFS) http.HandlerFunc {
 			return
 		}
 		jsonOK(w, map[string]any{"ok": true, "path": path})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: usage (token usage per user)
+// ---------------------------------------------------------------------------
+
+func apiUsageHandler(am *auth.Manager, um *usage.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			recs, err := um.List(r.Context(), id, usage.MaxRecords)
+			if err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if recs == nil {
+				recs = []usage.Record{}
+			}
+			jsonOK(w, map[string]any{
+				"ok":      true,
+				"summary": usage.Summarize(recs),
+				"records": recs,
+			})
+		case http.MethodPost:
+			// POST = clear (empty body)
+			if err := um.Clear(r.Context(), id); err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			jsonOK(w, map[string]any{"ok": true})
+		default:
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: server logs (live console tail)
+// ---------------------------------------------------------------------------
+
+func apiLogsHandler(am *auth.Manager, lg *servelog.Buffer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := resolveAuth(r, am); !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			lines := lg.Tail(0)
+			if lines == nil {
+				lines = []string{}
+			}
+			jsonOK(w, map[string]any{"ok": true, "lines": lines})
+		case http.MethodPost:
+			lg.Clear()
+			jsonOK(w, map[string]any{"ok": true})
+		default:
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: combos (model groups per user)
+// ---------------------------------------------------------------------------
+
+func apiCombosHandler(am *auth.Manager, cb *combos.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			list, err := cb.List(r.Context(), id)
+			if err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if list == nil {
+				list = []combos.Combo{}
+			}
+			jsonOK(w, map[string]any{"ok": true, "combos": list, "active": comboActiveID(cb, r, id)})
+		case http.MethodPost:
+			var body combos.Combo
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+				return
+			}
+			saved, err := cb.Upsert(r.Context(), id, body)
+			if err != nil {
+				jsonErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			jsonOK(w, map[string]any{"ok": true, "combo": saved})
+		default:
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}
+}
+
+func comboActiveID(cb *combos.Manager, r *http.Request, id int64) string {
+	ac := cb.ActiveCombo(r.Context(), id)
+	if ac == nil {
+		return ""
+	}
+	return ac.ID
+}
+
+func apiCombosDeleteHandler(am *auth.Manager, cb *combos.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		if body.ID == "" {
+			jsonErr(w, http.StatusBadRequest, "Missing id")
+			return
+		}
+		removed, err := cb.Delete(r.Context(), id, body.ID)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !removed {
+			jsonErr(w, http.StatusNotFound, "Combo not found")
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "deleted": body.ID})
+	}
+}
+
+func apiCombosActivateHandler(am *auth.Manager, cb *combos.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		if body.ID == "" {
+			if err := cb.SetActive(r.Context(), id, ""); err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			jsonOK(w, map[string]any{"ok": true, "active": ""})
+			return
+		}
+		if cb.Get(r.Context(), id, body.ID) == nil {
+			jsonErr(w, http.StatusBadRequest, "Combo not found")
+			return
+		}
+		if err := cb.SetActive(r.Context(), id, body.ID); err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "active": body.ID})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API: providers (9router-style provider registry + live model catalog)
+// ---------------------------------------------------------------------------
+
+func readProviderBody(r *http.Request, p *providers.Provider) error {
+	return json.NewDecoder(r.Body).Decode(p)
+}
+
+func apiProvidersHandler(am *auth.Manager, pv *providers.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			list, err := pv.List(r.Context(), id)
+			if err != nil {
+				jsonErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if list == nil {
+				list = []providers.Provider{}
+			}
+			jsonOK(w, map[string]any{"ok": true, "providers": providers.PublicList(list)})
+		case http.MethodPost:
+			var body providers.Provider
+			if err := readProviderBody(r, &body); err != nil {
+				jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+				return
+			}
+			stored, err := pv.Upsert(r.Context(), id, body)
+			if err != nil {
+				jsonErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			jsonOK(w, map[string]any{"ok": true, "provider": stored.Public()})
+		default:
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}
+}
+
+func apiProvidersCheckHandler(am *auth.Manager, pv *providers.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			ProviderID string            `json:"providerId"`
+			BaseURL    string            `json:"baseUrl"`
+			Type       string            `json:"type"`
+			APIType    string            `json:"apiType"`
+			APIKey     string            `json:"apiKey"`
+			Headers    map[string]string `json:"headers"`
+			ProxyURL   string            `json:"proxyUrl"`
+			Force      bool              `json:"force"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		var res *providers.ModelsResult
+		if body.ProviderID != "" {
+			res = pv.CheckStored(r.Context(), id, body.ProviderID, body.Force)
+		} else {
+			if strings.TrimSpace(body.BaseURL) == "" {
+				jsonErr(w, http.StatusBadRequest, "Missing baseUrl")
+				return
+			}
+			p := providers.Provider{
+				BaseURL:  body.BaseURL,
+				Type:     body.Type,
+				APIType:  body.APIType,
+				APIKey:   body.APIKey,
+				Headers:  body.Headers,
+				ProxyURL: body.ProxyURL,
+			}
+			if p.Type == "" {
+				p.Type = providers.TypeOpenAI
+			}
+			res = pv.CheckInline(r.Context(), p)
+		}
+		jsonOK(w, map[string]any{
+			"ok":        true,
+			"online":    res.Online,
+			"status":    res.Status,
+			"error":     res.Error,
+			"latencyMs": res.LatencyMs,
+			"models":    res.Models,
+		})
+	}
+}
+
+func apiProvidersDeleteHandler(am *auth.Manager, sm *settings.Manager, cb *combos.Manager, pv *providers.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		id, ok := resolveAuth(r, am)
+		if !ok {
+			jsonErr(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+			jsonErr(w, http.StatusBadRequest, "Missing id")
+			return
+		}
+		p := pv.Get(r.Context(), id, body.ID)
+		if p != nil && p.Builtin {
+			jsonErr(w, http.StatusBadRequest, "Provider built-in tidak bisa dihapus")
+			return
+		}
+		removed, err := pv.Delete(r.Context(), id, body.ID)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !removed {
+			jsonErr(w, http.StatusNotFound, "Provider not found")
+			return
+		}
+		// Clean up references: settings.defaultModel & combo models that point at
+		// this provider's prefix (prefix/model-id).
+		if p != nil && p.Prefix != "" {
+			if cfg := sm.Get(r.Context(), id); cfg != nil {
+				changed := false
+				if cfg.Model != nil && providers.Referencing(p.Prefix, *cfg.Model) {
+					cfg.Model = nil
+					changed = true
+				}
+				if changed {
+					if cfg.IsEmpty() {
+						_ = sm.Delete(r.Context(), id)
+					} else {
+						_ = sm.Set(r.Context(), id, cfg)
+					}
+				}
+			}
+			cleanComboModels(r, cb, id, p.Prefix)
+		}
+		jsonOK(w, map[string]any{"ok": true, "deleted": body.ID})
+	}
+}
+
+// cleanComboModels strips models referencing the given prefix from every combo
+// of the chat.
+func cleanComboModels(r *http.Request, cb *combos.Manager, chatID int64, prefix string) {
+	list, err := cb.List(r.Context(), chatID)
+	if err != nil {
+		return
+	}
+	for _, c := range list {
+		out := c.Models[:0]
+		changed := false
+		for _, mo := range c.Models {
+			if providers.Referencing(prefix, mo) {
+				changed = true
+				continue
+			}
+			out = append(out, mo)
+		}
+		if changed {
+			c.Models = out
+			_, _ = cb.Upsert(r.Context(), chatID, c)
+		}
 	}
 }

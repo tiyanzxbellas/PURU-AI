@@ -3,12 +3,19 @@ export default function Modal({ modal, onConfirm, onCancel }) {
   const { title, message, confirmLabel = 'OK', cancelLabel = null, danger = false } = modal
   return (
     <div className="modal-overlay" onClick={cancelLabel ? onCancel : undefined}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className={'modal-title' + (danger ? ' danger' : '')}>{title}</div>
-        <div className="modal-body">{message}</div>
-        <div className="modal-actions">
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 style={{ color: danger ? 'var(--danger)' : undefined }}>{title}</h3>
           {cancelLabel && (
-            <button className="btn btn-secondary" onClick={onCancel}>Batal</button>
+            <button className="icon-btn" onClick={onCancel} aria-label="Tutup">
+              <span className="ms">close</span>
+            </button>
+          )}
+        </div>
+        <div className="modal-body">{message}</div>
+        <div className="modal-foot">
+          {cancelLabel && (
+            <button className="btn btn-secondary" onClick={onCancel}>{cancelLabel}</button>
           )}
           <button
             className={danger ? 'btn btn-danger' : 'btn btn-primary'}

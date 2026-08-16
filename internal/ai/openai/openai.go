@@ -23,10 +23,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -38,20 +41,55 @@ type Client struct {
 	apiKey  string
 	model   string
 	hc      *http.Client
+	// headers are extra per-request HTTP headers (provider-specific). The
+	// markers "@session" and "@request" are substituted in roundTrip with the
+	// stable per-chat session id and a fresh per-request id respectively.
+	headers map[string]string
+	// proxy, when non-empty, is a 9router-style edge relay base URL. Requests
+	// are then sent to the relay with x-relay-target / x-relay-path headers so
+	// the relay forwards them to the real endpoint (masks the caller's IP /
+	// changes the TLS fingerprint edge).
+	proxy string
+	// session is the stable per-chat session id substituted for "@session".
+	session string
+}
+
+// Options configures a NewWithOptions client.
+type Options struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	// Headers are extra HTTP headers sent on every request. Values "@session"
+	// and "@request" are replaced with the per-chat session id and a fresh
+	// per-request id.
+	Headers map[string]string
+	// Proxy is an optional 9router-style edge relay base URL (see Client.proxy).
+	Proxy string
+	// Session is the stable per-chat session id substituted for "@session".
+	Session string
+}
+
+// NewWithOptions builds a Client from an Options struct using the shared HTTP
+// client.
+func NewWithOptions(opts Options, hc *http.Client) (*Client, error) {
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	return &Client{
+		baseURL: strings.TrimSuffix(opts.BaseURL, "/"),
+		apiKey:  opts.APIKey,
+		model:   opts.Model,
+		hc:      hc,
+		headers: opts.Headers,
+		proxy:   strings.TrimSuffix(opts.Proxy, "/"),
+		session: opts.Session,
+	}, nil
 }
 
 // New builds a Client for the given endpoint/key/model using the shared HTTP
 // client.
 func New(baseURL, apiKey, model string, hc *http.Client) (*Client, error) {
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	return &Client{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		hc:      hc,
-	}, nil
+	return NewWithOptions(Options{BaseURL: baseURL, APIKey: apiKey, Model: model}, hc)
 }
 
 // Call is the llms.Model convenience wrapper.
@@ -188,6 +226,17 @@ func callName(t llms.ToolCall) string {
 		return t.FunctionCall.Name
 	}
 	return ""
+}
+
+// randHex returns n random bytes encoded as lowercase hex.
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand never fails in practice; fall back to zero bytes rather
+		// than panicking the request path.
+		return strings.Repeat("0", 2*n)
+	}
+	return hex.EncodeToString(b)
 }
 
 // buildMessages converts []llms.MessageContent into wire messages, mirroring
@@ -346,13 +395,47 @@ func (c *Client) roundTrip(ctx context.Context, req wireRequest, opts llms.CallO
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
+	target := c.baseURL + "/chat/completions"
+
+	// Build the outbound request. With a relay proxy configured the request is
+	// sent to the relay root and the real endpoint is described via the
+	// x-relay-target / x-relay-path headers (the 9router protocol); the relay
+	// forwards body, method and the remaining headers verbatim.
+	requestURL := target
+	var relayTarget, relayPath string
+	if c.proxy != "" {
+		u, perr := url.Parse(target)
+		if perr != nil {
+			return nil, fmt.Errorf("openai: invalid target URL %q: %w", target, perr)
+		}
+		requestURL = c.proxy
+		relayTarget = u.Scheme + "://" + u.Host
+		relayPath = u.RequestURI()
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	if c.proxy != "" {
+		httpReq.Header.Set("x-relay-target", relayTarget)
+		httpReq.Header.Set("x-relay-path", relayPath)
+	}
+	// Extra provider headers, with per-chat/per-request marker substitution.
+	for k, v := range c.headers {
+		switch v {
+		case "@session":
+			if c.session != "" {
+				v = c.session
+			}
+		case "@request":
+			v = "msg_" + randHex(24)
+		}
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := c.hc.Do(httpReq)

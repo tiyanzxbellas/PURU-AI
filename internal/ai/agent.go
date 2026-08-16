@@ -124,11 +124,30 @@ func (a *Agent) clientFor(ctx context.Context, chatID int64) llms.Model {
 	return a.Client
 }
 
-func (a *Agent) clientForOpts(ctx context.Context, opts *ProcessOptions) llms.Model {
+func (a *Agent) clientForOpts(ctx context.Context, opts *ProcessOptions, attempt int) llms.Model {
 	if opts == nil {
 		return a.clientFor(ctx, 0)
 	}
+	ctx = WithComboAttempt(ctx, attempt)
 	return a.clientFor(ctx, opts.ChatID)
+}
+
+// comboAttemptKey is the context key carrying the current model-loop retry
+// attempt (1-based). Merged into the per-chat model resolution so a fallback
+// combo advances to the next model on each retry.
+type comboAttemptKey struct{}
+
+// WithComboAttempt stores the current attempt number in ctx.
+func WithComboAttempt(ctx context.Context, attempt int) context.Context {
+	return context.WithValue(ctx, comboAttemptKey{}, attempt)
+}
+
+// ComboAttempt reads the current model-loop attempt (0 when absent).
+func ComboAttempt(ctx context.Context) int {
+	if v, ok := ctx.Value(comboAttemptKey{}).(int); ok {
+		return v
+	}
+	return 0
 }
 
 type ProcessOptions struct {
@@ -546,11 +565,11 @@ func (ra *requestAgent) toolID(id string) string {
 // runOnce: one tool-calling loop driven by langchaingo's executor
 // ---------------------------------------------------------------------------
 
-func (a *Agent) runOnce(ctx context.Context, system string, history []*messages.Message, userText string, opts *ProcessOptions, toolMap map[string]*Tool) (*runResult, error) {
+func (a *Agent) runOnce(ctx context.Context, system string, history []*messages.Message, userText string, opts *ProcessOptions, toolMap map[string]*Tool, attempt int) (*runResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, totalAgentTime)
 	defer cancel()
 
-	client := a.clientForOpts(ctx, opts)
+	client := a.clientForOpts(ctx, opts, attempt)
 	if client == nil {
 		return nil, errNoModel
 	}
@@ -663,7 +682,7 @@ func (a *Agent) ProcessMessage(ctx context.Context, userMessage string, history 
 retryLoop:
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		attempts = attempt
-		run, rerr := a.runOnce(ctx, systemPrompt, history, userMessage, opts, tools)
+		run, rerr := a.runOnce(ctx, systemPrompt, history, userMessage, opts, tools, attempt)
 		switch {
 		case rerr != nil:
 			lastErr = rerr

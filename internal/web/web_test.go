@@ -14,9 +14,14 @@ import (
 	"time"
 
 	"github.com/purujawa06-bot/PURU-AI/internal/auth"
+	"github.com/purujawa06-bot/PURU-AI/internal/combos"
+	"github.com/purujawa06-bot/PURU-AI/internal/config"
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
+	"github.com/purujawa06-bot/PURU-AI/internal/providers"
+	"github.com/purujawa06-bot/PURU-AI/internal/servelog"
 	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/skills"
+	"github.com/purujawa06-bot/PURU-AI/internal/usage"
 	"github.com/purujawa06-bot/PURU-AI/internal/vfs"
 )
 
@@ -85,7 +90,11 @@ func (f *fakeRTDB) handler() http.Handler {
 			}
 			w.Write([]byte(raw))
 		case http.MethodDelete:
-			delete(f.db, key)
+			for k := range f.db {
+				if k == key || strings.HasPrefix(k, key+"/") {
+					delete(f.db, k)
+				}
+			}
 			w.Write([]byte("null"))
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -99,10 +108,18 @@ type webEnv struct {
 	cat *skills.Catalog
 	reg *skills.Registry
 	vfs *vfs.VFS
+	um  *usage.Manager
+	lg  *servelog.Buffer
+	cb  *combos.Manager
+	pv  *providers.Manager
 	srv *httptest.Server
 }
 
 func newWebEnv(t *testing.T) *webEnv {
+	return newWebEnvCfg(t, config.AIConfig{})
+}
+
+func newWebEnvCfg(t *testing.T, aiCfg config.AIConfig) *webEnv {
 	t.Helper()
 	rtdb := httptest.NewServer(newFakeRTDB().handler())
 	t.Cleanup(rtdb.Close)
@@ -113,10 +130,14 @@ func newWebEnv(t *testing.T) *webEnv {
 	v := vfs.New(fb)
 	cat := skills.NewCatalog(v)
 	reg := skills.NewRegistry(v, skills.RegistryOptions{})
-	mux := NewMux(am, sm, cat, reg, v)
+	um := usage.New(fb)
+	lg := servelog.New(100)
+	cb := combos.New(fb, time.Hour)
+	pv := providers.New(fb, hc, time.Hour)
+	mux := NewMux(am, sm, cat, reg, v, um, lg, cb, pv, aiCfg)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &webEnv{am: am, sm: sm, cat: cat, reg: reg, vfs: v, srv: srv}
+	return &webEnv{am: am, sm: sm, cat: cat, reg: reg, vfs: v, um: um, lg: lg, cb: cb, pv: pv, srv: srv}
 }
 
 func setupAuth(t *testing.T, env *webEnv, id int64, pw string) {
@@ -305,12 +326,22 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after struct {
-		APIKey string `json:"apiKey"`
+		APIKey    string `json:"apiKey"`
+		Model     string `json:"model"`
+		BaseURL   string `json:"baseUrl"`
+		SysPrompt string `json:"systemPrompt"`
 	}
 	json.NewDecoder(resp.Body).Decode(&after)
 	resp.Body.Close()
 	if after.APIKey != "" {
 		t.Fatal("key still present after clear")
+	}
+	if after.Model != "" || after.BaseURL != "" {
+		t.Fatalf("AI connection fields not cleared: %+v", after)
+	}
+	// Reset must keep the user's system prompt (custom role).
+	if after.SysPrompt != "Kamu adalah asisten" {
+		t.Fatalf("systemPrompt hilang setelah clear: %q (harus dipertahankan)", after.SysPrompt)
 	}
 }
 
@@ -395,6 +426,136 @@ func TestConfigPartialModelUpdateKeepsSystemPrompt(t *testing.T) {
 	}
 	if got2.SysPrompt != "Kamu adalah asisten yang ramah" {
 		t.Fatalf("systemPrompt hilang setelah clear model: %q", got2.SysPrompt)
+	}
+}
+
+// TestConfigPartialModelUpdateKeepsSystemPrompt checks proxyUrl & headers are
+// updated partially too: {model} alone must not touch proxyUrl or headers, and
+// a template apply (baseUrl/apiKey/model/headers/proxyUrl) must work.
+func TestConfigProxyAndHeaders(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 55, "pw")
+	base := env.srv.URL + "/login/55/pw/api"
+
+	// Apply the "OpenCode Free" template payload (proxy auto-on).
+	tmpl, _ := json.Marshal(map[string]any{
+		"baseUrl":  "https://opencode.ai/zen/v1",
+		"apiKey":   "public",
+		"model":    "deepseek-v4-flash-free",
+		"proxyUrl": "https://vercel-relay-6jghwlfwt-rikipurpur98-dotcoms-projects.vercel.app/",
+		"headers": map[string]string{
+			"x-opencode-client":  "desktop",
+			"x-opencode-session": "@session",
+			"x-opencode-request": "@request",
+			"x-opencode-project": "global",
+			"User-Agent":         "opencode",
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(tmpl))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("template save got %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		OK       bool              `json:"ok"`
+		BaseURL  string            `json:"baseUrl"`
+		APIKey   string            `json:"apiKey"`
+		Model    string            `json:"model"`
+		ProxyURL string            `json:"proxyUrl"`
+		Headers  map[string]string `json:"headers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !got.OK || got.BaseURL != "https://opencode.ai/zen/v1" || got.Model != "deepseek-v4-flash-free" ||
+		got.APIKey != "public" {
+		t.Fatalf("template config wrong: %+v", got)
+	}
+	if !strings.Contains(got.ProxyURL, "vercel-relay") {
+		t.Fatalf("proxyUrl not saved: %q", got.ProxyURL)
+	}
+	if got.Headers["x-opencode-client"] != "desktop" || got.Headers["x-opencode-session"] != "@session" {
+		t.Fatalf("headers not saved: %+v", got.Headers)
+	}
+
+	// Partial {model} update must NOT clear proxyUrl or headers.
+	partial, _ := json.Marshal(map[string]string{"model": "big-pickle"})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(partial))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got2 struct {
+		Model    string `json:"model"`
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got2); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got2.Model != "big-pickle" || !strings.Contains(got2.ProxyURL, "vercel-relay") {
+		t.Fatalf("partial model update clobbered proxy: %+v", got2)
+	}
+
+	// Proxy OFF: send proxyUrl="" -> clears the relay (back to direct).
+	off, _ := json.Marshal(map[string]string{"proxyUrl": ""})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(off))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got3 struct {
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got3); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got3.ProxyURL != "" {
+		t.Fatalf("proxyUrl should be empty after OFF: %q", got3.ProxyURL)
+	}
+
+	// Headers clear: send headers:{} -> removes all headers.
+	clearH, _ := json.Marshal(map[string]any{"headers": map[string]string{}})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(clearH))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(base + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got4 struct {
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got4); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(got4.Headers) != 0 {
+		t.Fatalf("headers should be empty after clear: %+v", got4.Headers)
 	}
 }
 
@@ -704,5 +865,498 @@ func TestFilesListReadWriteDelete(t *testing.T) {
 	}
 	if _, ok := env.vfs.ReadFile(ctx, 33, "skills/pdf/SKILL.md"); ok {
 		t.Fatal("skill file still exists after DeleteDir")
+	}
+}
+
+// TestAPIUsageLogsCombos exercises the new dashboard endpoints: usage (token
+// logs), server logs tail, and combos CRUD + activate.
+func TestAPIUsageLogsCombos(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 77, "pw")
+	base := env.srv.URL + "/login/77/pw/api"
+
+	// --- usage ---
+	if err := env.um.Add(context.Background(), 77, "opencode.ai", "deepseek-v4-flash-free", 123, 45); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(base + "/usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usageResp struct {
+		OK      bool           `json:"ok"`
+		Summary usage.Summary  `json:"summary"`
+		Records []usage.Record `json:"records"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&usageResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !usageResp.OK || usageResp.Summary.TotalRequests != 1 || usageResp.Summary.TotalInput != 123 || usageResp.Summary.TotalOutput != 45 {
+		t.Fatalf("usage summary wrong: %+v", usageResp)
+	}
+	if len(usageResp.Records) != 1 || usageResp.Records[0].Provider != "opencode.ai" {
+		t.Fatalf("usage records wrong: %+v", usageResp.Records)
+	}
+
+	// --- server logs ---
+	_, _ = env.lg.Write([]byte("server test line\n"))
+	resp, err = http.Get(base + "/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logsResp struct {
+		OK    bool     `json:"ok"`
+		Lines []string `json:"lines"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&logsResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !logsResp.OK || !strings.Contains(strings.Join(logsResp.Lines, ""), "server test line") {
+		t.Fatalf("logs wrong: %+v", logsResp)
+	}
+
+	// clear usage
+	req, _ := http.NewRequest(http.MethodPost, base+"/usage", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clearResp map[string]bool
+	if err := json.NewDecoder(resp.Body).Decode(&clearResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !clearResp["ok"] {
+		t.Fatal("usage clear failed")
+	}
+	resp, err = http.Get(base + "/usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var emptyUsage struct {
+		Summary usage.Summary `json:"summary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&emptyUsage); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if emptyUsage.Summary.TotalRequests != 0 {
+		t.Fatalf("usage not cleared: %+v", emptyUsage)
+	}
+
+	// clear server logs
+	req, _ = http.NewRequest(http.MethodPost, base+"/logs", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if env.lg.Len() != 0 {
+		t.Fatalf("logs not cleared: %d lines left", env.lg.Len())
+	}
+
+	// --- combos: create, get, activate, deactivate, delete ---
+	createBody, _ := json.Marshal(map[string]any{
+		"name":     "backup",
+		"models":   []string{"model-a", "model-b"},
+		"strategy": "fallback",
+	})
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos", bytes.NewReader(createBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var comboResp struct {
+		OK    bool `json:"ok"`
+		Combo struct {
+			ID       string   `json:"id"`
+			Name     string   `json:"name"`
+			Models   []string `json:"models"`
+			Strategy string   `json:"strategy"`
+		} `json:"combo"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&comboResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !comboResp.OK || comboResp.Combo.ID == "" || comboResp.Combo.Name != "backup" || len(comboResp.Combo.Models) != 2 || comboResp.Combo.Strategy != "fallback" {
+		t.Fatalf("combo create wrong: %+v", comboResp)
+	}
+	comboID := comboResp.Combo.ID
+
+	// GET list
+	resp, err = http.Get(base + "/combos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listResp struct {
+		Combos []struct {
+			ID string `json:"id"`
+		} `json:"combos"`
+		Active string `json:"active"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(listResp.Combos) != 1 || listResp.Active != "" {
+		t.Fatalf("combo list wrong: %+v", listResp)
+	}
+
+	// activate
+	actBody, _ := json.Marshal(map[string]string{"id": comboID})
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos/activate", bytes.NewReader(actBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&actResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if actResp["ok"] != true || actResp["active"] != comboID {
+		t.Fatalf("combo activate wrong: %+v", actResp)
+	}
+	if ac := env.cb.ActiveCombo(context.Background(), 77); ac == nil || ac.ID != comboID {
+		t.Fatalf("active combo = %+v", ac)
+	}
+
+	// deactivate
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos/activate", bytes.NewReader([]byte(`{"id":""}`)))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if env.cb.ActiveCombo(context.Background(), 77) != nil {
+		t.Fatal("combo still active after deactivate")
+	}
+
+	// delete
+	delBody, _ := json.Marshal(map[string]string{"id": comboID})
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos/delete", bytes.NewReader(delBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete got %d, want 200", resp.StatusCode)
+	}
+	// deleting a non-existent combo 404s
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos/delete", bytes.NewReader(delBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete missing combo got %d, want 404", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Providers
+// ---------------------------------------------------------------------------
+
+func TestAPIProvidersCRUDAndHideKey(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 55, "pw")
+	base := env.srv.URL + "/login/55/pw/api"
+
+	// create
+	body, _ := json.Marshal(map[string]any{
+		"name": "Prod", "prefix": "oc-prod", "type": "openai-compatible",
+		"apiType": "chat", "baseUrl": "https://prod/v1", "apiKey": "sk-topsecret",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/providers", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !created.OK {
+		t.Fatal("create provider failed")
+	}
+
+	// duplicate prefix -> 400
+	req, _ = http.NewRequest(http.MethodPost, base+"/providers", bytes.NewReader(body))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate prefix got %d, want 400", resp.StatusCode)
+	}
+
+	// list hides apiKey
+	resp, err = http.Get(base + "/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		OK        bool `json:"ok"`
+		Providers []struct {
+			ID      string `json:"id"`
+			Prefix  string `json:"prefix"`
+			HasKey  bool   `json:"hasApiKey"`
+			APIKey  string `json:"apiKey"`
+			BaseURL string `json:"baseUrl"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(listed.Providers) != 1 || !listed.Providers[0].HasKey || listed.Providers[0].APIKey != "" {
+		t.Fatalf("list must hide apiKey: %+v", listed.Providers)
+	}
+}
+
+func TestAPIProvidersDeleteCleansReferences(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 66, "pw")
+	base := env.srv.URL + "/login/66/pw/api"
+
+	// create provider
+	body, _ := json.Marshal(map[string]any{
+		"name": "Prod", "prefix": "oc", "type": "openai-compatible",
+		"apiType": "chat", "baseUrl": "https://prod/v1",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/providers", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		OK       bool `json:"ok"`
+		Provider struct {
+			ID string `json:"id"`
+		} `json:"provider"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !created.OK {
+		t.Fatal("create failed")
+	}
+
+	// model default referencing prefix
+	cfgBody, _ := json.Marshal(map[string]string{"model": "oc/deepseek-v4-flash-free"})
+	req, _ = http.NewRequest(http.MethodPost, base+"/config", bytes.NewReader(cfgBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// combo referencing the same prefix
+	comboBody, _ := json.Marshal(map[string]any{
+		"id": "", "name": "main", "models": []string{"oc/a", "gpt-4o"}, "strategy": "fallback",
+	})
+	req, _ = http.NewRequest(http.MethodPost, base+"/combos", bytes.NewReader(comboBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// delete provider
+	delBody, _ := json.Marshal(map[string]string{"id": created.Provider.ID})
+	req, _ = http.NewRequest(http.MethodPost, base+"/providers/delete", bytes.NewReader(delBody))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete got %d, want 200", resp.StatusCode)
+	}
+
+	// settings model should be cleared
+	resp, _ = http.Get(base + "/config")
+	var cfg struct {
+		Model string `json:"model"`
+	}
+	json.NewDecoder(resp.Body).Decode(&cfg)
+	resp.Body.Close()
+	if cfg.Model != "" {
+		t.Fatalf("settings model not cleaned: %q", cfg.Model)
+	}
+
+	// combo model referencing the prefix removed
+	resp, _ = http.Get(base + "/combos")
+	var combos struct {
+		Combos []struct {
+			Models []string `json:"models"`
+		} `json:"combos"`
+	}
+	json.NewDecoder(resp.Body).Decode(&combos)
+	resp.Body.Close()
+	if len(combos.Combos) != 1 || len(combos.Combos[0].Models) != 1 || combos.Combos[0].Models[0] != "gpt-4o" {
+		t.Fatalf("combo not cleaned: %+v", combos.Combos)
+	}
+}
+
+func TestAPIProvidersCheck(t *testing.T) {
+	env := newWebEnv(t)
+	setupAuth(t, env, 88, "pw")
+	base := env.srv.URL + "/login/88/pw/api"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"m1"},{"id":"m2"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	body, _ := json.Marshal(map[string]any{
+		"baseUrl": upstream.URL + "/v1", "type": "openai-compatible",
+		"apiType": "chat", "apiKey": "sk-x",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/providers/check", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		OK     bool `json:"ok"`
+		Online bool `json:"online"`
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !res.OK || !res.Online || len(res.Models) != 2 {
+		t.Fatalf("check = %+v", res)
+	}
+}
+
+func TestAPIBuiltinProviderListedAndProtected(t *testing.T) {
+	env := newWebEnv(t)
+	env.pv.WithBuiltin(providers.BuiltinProvider(config.AIConfig{BaseURL: "https://puru/v1", APIKey: "k"}))
+	setupAuth(t, env, 11, "pw")
+	base := env.srv.URL + "/login/11/pw/api"
+
+	resp, err := http.Get(base + "/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		OK        bool               `json:"ok"`
+		Providers []providers.Public `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !got.OK {
+		t.Fatalf("list not ok: %+v", got)
+	}
+	var builtin *providers.Public
+	for i := range got.Providers {
+		if got.Providers[i].ID == providers.BuiltinProviderID {
+			builtin = &got.Providers[i]
+		}
+	}
+	if builtin == nil || !builtin.Builtin || builtin.Prefix != providers.BuiltinPrefix {
+		t.Fatalf("builtin provider missing: %+v", got.Providers)
+	}
+
+	// built-in provider can not be deleted
+	del, _ := json.Marshal(map[string]string{"id": providers.BuiltinProviderID})
+	req, _ := http.NewRequest(http.MethodPost, base+"/providers/delete", bytes.NewReader(del))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("builtin delete should be rejected, got %d", resp.StatusCode)
+	}
+}
+
+func TestConfigReportsRelayUrl(t *testing.T) {
+	const relay = "https://vercel-relay-ijhklxg99-rikipurpur98-dotcoms-projects.vercel.app/"
+	env := newWebEnvCfg(t, config.AIConfig{ProxyURL: relay})
+	setupAuth(t, env, 5, "pw")
+
+	resp, err := http.Get(env.srv.URL + "/login/5/pw/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		OK       bool   `json:"ok"`
+		ProxyURL string `json:"proxyUrl"`
+		RelayURL string `json:"relayUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !got.OK {
+		t.Fatalf("config not ok: %+v", got)
+	}
+	// Without a user override the effective proxyUrl inherits the built-in relay.
+	if got.ProxyURL != relay || got.RelayURL != relay {
+		t.Fatalf("relay not reported: proxyUrl=%q relayUrl=%q", got.ProxyURL, got.RelayURL)
+	}
+
+	// Proxy OFF -> effective proxyUrl empty even though the global relay is set.
+	off, _ := json.Marshal(map[string]string{"proxyUrl": ""})
+	req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/login/5/pw/api/config", bytes.NewReader(off))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(env.srv.URL + "/login/5/pw/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got2 struct {
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got2); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got2.ProxyURL != "" {
+		t.Fatalf("proxy should be OFF after clear, got %q", got2.ProxyURL)
+	}
+
+	// Proxy ON restores the built-in relay URL.
+	on, _ := json.Marshal(map[string]string{"proxyUrl": relay})
+	req, _ = http.NewRequest(http.MethodPost, env.srv.URL+"/login/5/pw/api/config", bytes.NewReader(on))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(env.srv.URL + "/login/5/pw/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got3 struct {
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got3); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got3.ProxyURL != relay {
+		t.Fatalf("proxy should be ON after restore, got %q", got3.ProxyURL)
 	}
 }

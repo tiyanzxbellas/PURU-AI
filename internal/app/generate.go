@@ -11,8 +11,29 @@ import (
 	"github.com/purujawa06-bot/PURU-AI/internal/firebase"
 	"github.com/purujawa06-bot/PURU-AI/internal/history"
 	"github.com/purujawa06-bot/PURU-AI/internal/messages"
+	"github.com/purujawa06-bot/PURU-AI/internal/settings"
 	"github.com/purujawa06-bot/PURU-AI/internal/telegram"
+	"github.com/purujawa06-bot/PURU-AI/internal/usage"
 )
+
+// recordUsage persists the last-step token usage of a model reply to the usage
+// store (per-user web dashboard). Provider label comes from the effective base
+// URL so the dashboard groups by provider like 9router's usage page.
+func (a *App) recordUsage(ctx context.Context, userID int64, res *ai.ProcessResult) {
+	if a.Usage == nil || res == nil || res.LastStepUsage.TotalTokens <= 0 {
+		return
+	}
+	modelName := a.cfg.AI.Model
+	baseURL := a.cfg.AI.BaseURL
+	if a.Settings != nil {
+		if u := a.Settings.Get(ctx, userID); u != nil {
+			eff := settings.Effective(a.cfg.AI, u)
+			modelName = eff.Model
+			baseURL = eff.BaseURL
+		}
+	}
+	_ = a.Usage.Add(ctx, userID, usage.ProviderLabel(baseURL), modelName, res.LastStepUsage.InputTokens, res.LastStepUsage.OutputTokens)
+}
 
 // processMessage handles a user message end-to-end.
 func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMessage string) error {
@@ -59,6 +80,7 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 		Input:  res.LastStepUsage.InputTokens,
 		Output: res.LastStepUsage.OutputTokens,
 	})
+	a.recordUsage(ctx, userID, res)
 	_ = a.hist.SetHistory(ctx, userID, saved)
 
 	if err := a.safeSend(ctx, msg, res.Text); err != nil {
@@ -179,6 +201,7 @@ func (a *App) handleDocument(ctx context.Context, msg *telegram.Message) error {
 		Input:  res.LastStepUsage.InputTokens,
 		Output: res.LastStepUsage.OutputTokens,
 	})
+	a.recordUsage(ctx, userID, res)
 
 	if err := a.safeSend(ctx, msg, res.Text); err != nil {
 		log.Printf("[app] send file-process reply failed: %v", err)
@@ -283,6 +306,7 @@ func (a *App) processImage(ctx context.Context, msg *telegram.Message, data []by
 		Input:  res.LastStepUsage.InputTokens,
 		Output: res.LastStepUsage.OutputTokens,
 	})
+	a.recordUsage(ctx, userID, res)
 
 	if err := a.safeSend(ctx, msg, res.Text); err != nil {
 		log.Printf("[app] send image reply failed: %v", err)

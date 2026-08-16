@@ -26,6 +26,16 @@ type Config struct {
 	// SystemPrompt is an optional custom role/instructions appended to the
 	// system prompt for this user (managed via the /login web page).
 	SystemPrompt *string `json:"systemPrompt,omitempty"`
+	// ProxyURL routes OpenAI-compatible requests through a 9router-style edge
+	// relay (x-relay-target / x-relay-path headers). nil = inherit global,
+	// "" = explicitly direct, otherwise the relay base URL.
+	ProxyURL *string `json:"proxyUrl,omitempty"`
+	// Headers are extra HTTP headers sent on every request to the model
+	// endpoint (used by provider templates that require custom headers, e.g.
+	// the x-opencode-* family for the opencode zen gateway). nil = inherit
+	// global, empty map = none. Values "@session" and "@request" are replaced
+	// server-side with a per-chat session id and a fresh request id.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Effective merges the server-wide AI config with a user override. Non-nil
@@ -43,13 +53,20 @@ func Effective(global config.AIConfig, user *Config) config.AIConfig {
 	if user.Model != nil {
 		global.Model = *user.Model
 	}
+	if user.ProxyURL != nil {
+		global.ProxyURL = *user.ProxyURL
+	}
+	if user.Headers != nil {
+		global.Headers = user.Headers
+	}
 	return global
 }
 
 // IsEmpty reports whether none of the fields are set (i.e. the user is fully
 // on the server default).
 func (c *Config) IsEmpty() bool {
-	return c == nil || (c.BaseURL == nil && c.APIKey == nil && c.Model == nil && c.SystemPrompt == nil)
+	return c == nil || (c.BaseURL == nil && c.APIKey == nil && c.Model == nil &&
+		c.SystemPrompt == nil && c.ProxyURL == nil && c.Headers == nil)
 }
 
 // Clone returns a deep copy so callers can mutate freely.
@@ -73,6 +90,16 @@ func (c *Config) Clone() *Config {
 	if c.SystemPrompt != nil {
 		v := *c.SystemPrompt
 		out.SystemPrompt = &v
+	}
+	if c.ProxyURL != nil {
+		v := *c.ProxyURL
+		out.ProxyURL = &v
+	}
+	if c.Headers != nil {
+		out.Headers = make(map[string]string, len(c.Headers))
+		for k, v := range c.Headers {
+			out.Headers[k] = v
+		}
 	}
 	return out
 }
@@ -171,6 +198,37 @@ func (m *Manager) ClearField(ctx context.Context, chatID int64, field string) er
 func (m *Manager) Delete(ctx context.Context, chatID int64) error {
 	m.delCache(chatID)
 	return m.fb.Delete(ctx, path(chatID))
+}
+
+// DeleteKeepPrompt resets the per-user override to the server default but
+// keeps the user's SystemPrompt (custom role / instructions). Used by the web
+// "Reset / clear config" flow — resetting the AI connection must not wipe the
+// user's own system prompt. When nothing would remain the document is deleted.
+func (m *Manager) DeleteKeepPrompt(ctx context.Context, chatID int64) error {
+	cfg := m.Get(ctx, chatID)
+	if cfg == nil {
+		return nil
+	}
+	cfg = KeepPromptOnly(cfg)
+	if cfg.IsEmpty() {
+		return m.Delete(ctx, chatID)
+	}
+	return m.Set(ctx, chatID, cfg)
+}
+
+// KeepPromptOnly returns a copy of cfg with every AI-connection field cleared
+// (base URL, key, model, proxy, headers); the user's SystemPrompt is kept. It
+// is pure so it can be unit-tested without a Firestore round-trip.
+func KeepPromptOnly(cfg *Config) *Config {
+	if cfg == nil {
+		return nil
+	}
+	out := &Config{SystemPrompt: cfg.SystemPrompt}
+	if cfg.SystemPrompt != nil {
+		v := *cfg.SystemPrompt
+		out.SystemPrompt = &v
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

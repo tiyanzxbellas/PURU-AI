@@ -164,7 +164,7 @@ func TestRunOnceToolContext(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools, 1)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestRunOnceOmitsProviderToolID(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools, 1)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestRunOnceHFStreamedToolCalls(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), "", nil, "tulis file", nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "tulis file", nil, tools, 1)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestRunOnceReasoningEchoedOnScratchpad(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools, 1)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestRunOnceReasoningPersisted(t *testing.T) {
 		},
 	}
 
-	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools)
+	res, err := agent.runOnce(context.Background(), "", nil, "halo", nil, tools, 1)
 	if err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}

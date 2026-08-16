@@ -485,3 +485,162 @@ func TestContentToStringImage(t *testing.T) {
 		t.Fatalf("text-only content = %v, want string halo", m4.Content)
 	}
 }
+
+// TestExtraHeadersAndSessionMarker verifies that extra headers are sent on the
+// wire, "@session" is substituted with the stable per-chat session id, and
+// "@request" gets a fresh msg_ id per call.
+func TestExtraHeadersAndSessionMarker(t *testing.T) {
+	var captured map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = map[string]string{
+			"x-opencode-client":  r.Header.Get("x-opencode-client"),
+			"x-opencode-session": r.Header.Get("x-opencode-session"),
+			"x-opencode-request": r.Header.Get("x-opencode-request"),
+			"x-opencode-project": r.Header.Get("x-opencode-project"),
+			"User-Agent":         r.Header.Get("User-Agent"),
+			"Authorization":      r.Header.Get("Authorization"),
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client, err := NewWithOptions(Options{
+		BaseURL: srv.URL,
+		APIKey:  "public",
+		Model:   "deepseek-v4-flash-free",
+		Session: "ses_abc123",
+		Headers: map[string]string{
+			"x-opencode-client":  "desktop",
+			"x-opencode-session": "@session",
+			"x-opencode-request": "@request",
+			"x-opencode-project": "global",
+			"User-Agent":         "opencode",
+		},
+	}, srv.Client())
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+
+	msgs := []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}}}
+	_, err = client.GenerateContent(context.Background(), msgs,
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if captured["x-opencode-client"] != "desktop" || captured["x-opencode-session"] != "ses_abc123" ||
+		captured["x-opencode-project"] != "global" || captured["User-Agent"] != "opencode" {
+		t.Fatalf("headers wrong: %+v", captured)
+	}
+	if captured["Authorization"] != "Bearer public" {
+		t.Fatalf("auth header wrong: %q", captured["Authorization"])
+	}
+	firstReq := captured["x-opencode-request"]
+	if !strings.HasPrefix(firstReq, "msg_") {
+		t.Fatalf("request id must start with msg_: %q", firstReq)
+	}
+
+	// Second call: same session, fresh request id.
+	captured = nil
+	_, err = client.GenerateContent(context.Background(), msgs,
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent #2: %v", err)
+	}
+	if captured["x-opencode-session"] != "ses_abc123" {
+		t.Fatalf("session must be stable across calls: %q", captured["x-opencode-session"])
+	}
+	if captured["x-opencode-request"] == firstReq || captured["x-opencode-request"] == "" {
+		t.Fatalf("request id must be fresh per call: first=%q second=%q", firstReq, captured["x-opencode-request"])
+	}
+}
+
+// TestRelayProxy verifies that a configured relay receives the request at the
+// relay root with x-relay-target / x-relay-path headers (the 9router protocol)
+// while all other headers and the body are preserved.
+func TestRelayProxy(t *testing.T) {
+	var got struct {
+		Path    string
+		Target  string
+		PathHdr string
+		Auth    string
+		Body    wireRequest
+	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Path = r.URL.Path
+		got.Target = r.Header.Get("x-relay-target")
+		got.PathHdr = r.Header.Get("x-relay-path")
+		got.Auth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&got.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer relay.Close()
+
+	origin := httptest.NewServer(http.NotFoundHandler())
+	defer origin.Close()
+
+	client, err := NewWithOptions(Options{
+		BaseURL: origin.URL + "/v1",
+		APIKey:  "public",
+		Model:   "deepseek-v4-flash-free",
+		Proxy:   relay.URL,
+	}, relay.Client())
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+
+	_, err = client.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}}},
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if got.Path != "/" && got.Path != "" {
+		t.Fatalf("relay request must hit the relay root, got path %q", got.Path)
+	}
+	if got.Target != origin.URL {
+		t.Fatalf("x-relay-target = %q, want %q", got.Target, origin.URL)
+	}
+	if got.PathHdr != "/v1/chat/completions" {
+		t.Fatalf("x-relay-path = %q, want /v1/chat/completions", got.PathHdr)
+	}
+	if got.Auth != "Bearer public" {
+		t.Fatalf("Authorization not forwarded: %q", got.Auth)
+	}
+	if got.Body.Model != "deepseek-v4-flash-free" || !got.Body.Stream {
+		t.Fatalf("relay body wrong: %+v", got.Body)
+	}
+}
+
+// TestRelayProxyIgnoresOrigin verifies the relay is actually used: the origin
+// server must never receive a request when a relay is configured.
+func TestRelayProxyIgnoresOrigin(t *testing.T) {
+	originHit := false
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originHit = true
+		w.Write([]byte("unexpected"))
+	}))
+	defer origin.Close()
+
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer relay.Close()
+
+	client, _ := NewWithOptions(Options{BaseURL: origin.URL, Proxy: relay.URL}, relay.Client())
+	_, err := client.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "halo"}}}},
+		llms.WithStreamingFunc(func(_ context.Context, _ []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if originHit {
+		t.Fatal("origin must not receive any request when a relay is configured")
+	}
+}
