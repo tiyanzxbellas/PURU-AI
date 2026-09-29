@@ -44,9 +44,9 @@ func New(cfg *config.Config, tg *telegram.API, h *history.Store, a *ai.Agent, m 
 	return &App{cfg: cfg, tg: tg, hist: h, agent: a, mem: m}
 }
 
-// busySession adalah entry busy-guard per-user. Disimpan sebagai pointer
-// agar CompareAndDelete aman: func value (context.CancelFunc) tidak boleh
-// dibandingkan langsung dengan == (panic), jadi pembandingnya pointer struct.
+// busySession is a per-user busy-guard entry. Stored as a pointer so
+// CompareAndDelete is safe: func values (context.CancelFunc) cannot be
+// compared with == (panic), so the pointer is the comparable key.
 type busySession struct {
 	cancel context.CancelFunc
 }
@@ -60,9 +60,9 @@ func (a *App) tryAcquire(userID int64, sess *busySession) bool {
 	return !loaded
 }
 
-// releaseCancel hanya melepas bila entry masih milik sesi ini (pointer sess
-// yang sama) — goroutine lama yang selesai belakangan tak boleh menendang sesi
-// baru yang mulai setelah /stop.
+// releaseCancel releases only when the entry still belongs to this session
+// (same sess pointer) — a late-finishing goroutine must not evict a newer
+// session started after /stop.
 func (a *App) releaseCancel(userID int64, sess *busySession) {
 	if sess == nil {
 		a.busy.Delete(userID)
@@ -71,11 +71,11 @@ func (a *App) releaseCancel(userID int64, sess *busySession) {
 	a.busy.CompareAndDelete(userID, sess)
 }
 
-// stopUser membatalkan proses agent yang berjalan untuk user tersebut.
-// Return true bila ada proses yang dihentikan, false bila tak ada.
-// Pakai CompareAndDelete atas nilai yang di-Load (pointer, comparable) agar
-// tak menghapus sesi baru yang mulai tepat setelah Load (balapan /stop vs
-// pesan baru). Aman dari panic compare func karena yang dibandingkan pointer.
+// stopUser cancels the running agent process for that user.
+// Returns true when a process was stopped, false when none.
+// Uses CompareAndDelete on the Loaded value (pointer, comparable) to avoid
+// deleting a new session started right after Load (/stop vs new message race).
+// Safe from func-compare panic because pointers are compared.
 func (a *App) stopUser(userID int64) bool {
 	v, ok := a.busy.Load(userID)
 	if !ok {
@@ -89,8 +89,8 @@ func (a *App) stopUser(userID int64) bool {
 }
 
 // Handle dispatches one update async per user (busy-guarded).
-// Di grup (group/supergroup) bot diam kecuali dipanggil via /ai atau
-// command instan (/help /clear /token /stop). Di private semua teks diproses.
+// In groups (group/supergroup) the bot stays silent unless called via /ai or
+// instant commands (/help /clear /token /stop). In private all text is processed.
 func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 	if upd.Message == nil || upd.Message.From == nil || upd.Message.Chat == nil {
 		return nil
@@ -168,13 +168,13 @@ func (a *App) Handle(ctx context.Context, upd *telegram.Update) error {
 	return nil
 }
 
-// isGroupChat true untuk chat grup Telegram (group/supergroup).
+// isGroupChat reports Telegram group chats (group/supergroup).
 func isGroupChat(t string) bool {
 	return t == "group" || t == "supergroup"
 }
 
-// parseAICommand mengenali /ai dan /ai@namabot di awal teks.
-// Return sisa teks + true bila cocok; /aid dkk bukan /ai.
+// parseAICommand matches /ai and /ai@botname at the start of the text.
+// Returns the remainder + true on match; /aid and friends are not /ai.
 func parseAICommand(s string) (string, bool) {
 	t := strings.TrimSpace(s)
 	if !strings.HasPrefix(t, "/ai") {
@@ -193,28 +193,52 @@ func parseAICommand(s string) (string, bool) {
 	return "", false
 }
 
-func isCommand(s string) bool {
+// commandName extracts the bot command token from message text ("/stop@bot"
+// -> "/stop"). It reads letters/digits/underscore after "/" so trailing
+// punctuation ("/stop.") still matches while longer words ("/stopwatch")
+// do not. Returns "" when the text is not a slash command.
+func commandName(s string) string {
 	t := strings.TrimSpace(s)
-	return strings.HasPrefix(t, "/help") ||
-		strings.HasPrefix(t, "/clear") ||
-		strings.HasPrefix(t, "/token") ||
-		strings.HasPrefix(t, "/stop") ||
-		strings.HasPrefix(t, "/sched")
+	if len(t) < 2 || t[0] != '/' {
+		return ""
+	}
+	i := 1
+	for i < len(t) && isCommandChar(t[i]) {
+		i++
+	}
+	if i == 1 {
+		return ""
+	}
+	return t[:i]
+}
+
+func isCommandChar(c byte) bool {
+	return c == '_' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
+}
+
+func isCommand(s string) bool {
+	switch commandName(s) {
+	case "/help", "/clear", "/token", "/stop", "/sched":
+		return true
+	}
+	return false
 }
 
 func (a *App) handleCommand(ctx context.Context, msg *telegram.Message) error {
-	t := strings.TrimSpace(msg.Text)
-	switch {
-	case strings.HasPrefix(t, "/stop"):
+	switch commandName(msg.Text) {
+	case "/stop":
 		if a.stopUser(msg.From.ID) {
 			return a.safeReply(ctx, msg, "⏹️ Process stopped.", true)
 		}
 		return a.safeReply(ctx, msg, "No process is running.", true)
-	case strings.HasPrefix(t, "/token"):
+	case "/token":
 		return a.safeReply(ctx, msg, tokenInfo(history.TokenCountFull(a.renderedSystemFor(msg.From.ID), a.hist.Get(msg.From.ID)), a.cfg.HistoryTokenLimit), true)
-	case strings.HasPrefix(t, "/help"):
+	case "/help":
 		return a.safeReply(ctx, msg, "PURU-AI lightweight — just send any message.\n/clear = clear history.\n/token = memory token usage info.\n/stop = stop the running process.\n/sched = list scheduled jobs (ask me to schedule, e.g. \"every day 6am WIB check stocks\").\nIn groups: call via /ai <question> (e.g. /ai explain Raft).", true)
-	case strings.HasPrefix(t, "/sched"):
+	case "/sched":
 		return a.handleSchedCommand(ctx, msg)
 	default: // /clear
 		_ = a.hist.Clear(msg.From.ID)
@@ -420,9 +444,9 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message, userMes
 	u := &messages.Message{Role: "user"}
 	messages.SetContentString(u, userMessage)
 	saved = append(saved, u)
-	// Simpan apa adanya (reasoning + respon kosong dipertahankan);
-	// hanya truncate ukuran via Sanitize. Tanpa prune — biarkan compact
-	// yang bekerja saat kena history_token_limit.
+	// Keep as-is (reasoning + empty responses preserved);
+	// only size-truncated via Sanitize. No prune — compaction handles
+	// it at history_token_limit.
 	saved = append(saved, messages.SanitizeHistoryMessages(res.ResponseMessages)...)
 	_ = a.hist.Set(userID, saved)
 

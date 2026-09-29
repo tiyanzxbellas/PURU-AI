@@ -112,6 +112,16 @@ func TestLoadBootstrap(t *testing.T) {
 	if !strings.Contains(def.Soul, "PuruClaw") {
 		t.Fatalf("Soul must load, got %q", def.Soul)
 	}
+	if !strings.Contains(def.User, "PLACEHOLDER") {
+		t.Fatalf("User template must use PLACEHOLDER token, got %q", def.User)
+	}
+	memoryData, err := os.ReadFile(MemoryPath(ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(memoryData), "PLACEHOLDER") {
+		t.Fatalf("Memory template must use PLACEHOLDER token, got %q", memoryData)
+	}
 	boot := def.Bootstrap()
 	for _, label := range []string{"## " + FileAgents, "## " + FileSoul, "## " + FileUser} {
 		if !strings.Contains(boot, label) {
@@ -315,5 +325,37 @@ func TestBuildSkillsSummaryExcluding(t *testing.T) {
 	}
 	if !strings.Contains(excluded, "skill-creator") {
 		t.Fatalf("excluded catalog must keep skill-creator, got %q", excluded)
+	}
+}
+
+func TestClawicFrontmatter(t *testing.T) {
+	ws := t.TempDir()
+	skillDir := filepath.Join(SkillsDir(ws), "my-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nslug: my-skill\nversion: 1.2.3\ndescription: Clawic skill.\nmetadata:\n  author: tester\n...\n\n# Body\n"
+	if err := os.WriteFile(filepath.Join(skillDir, FileSkill), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installed := ListSkills(ws)
+	found := false
+	for _, skill := range installed {
+		if skill.Name == "my-skill" {
+			found = true
+			if skill.Description != "Clawic skill." {
+				t.Fatalf("description = %q", skill.Description)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Clawic skill missing: %+v", installed)
+	}
+	body, ok := LoadSkill(ws, "my-skill")
+	if !ok || !strings.Contains(body, "# Body") {
+		t.Fatalf("LoadSkill clawic = %q,%v", body, ok)
+	}
+	if _, ok := LoadSkill(ws, "MY-SKILL"); !ok {
+		t.Fatal("clawic skill must resolve case-insensitively")
 	}
 }
