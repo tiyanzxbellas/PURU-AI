@@ -1,5 +1,5 @@
 {
-  "telegram_bot_token": ":6322738178:AAEGHWmdjq8Z028OLuu_aRfLjWepMME-r2w",
+  "telegram_bot_token": "6322738178:AAEGHWmdjq8Z028OLuu_aRfLjWepMME-r2w",
   "telegram_allowed_users": [],
   "model": {
     "base_url": "https://nirkyy-a.hf.space/v1",
