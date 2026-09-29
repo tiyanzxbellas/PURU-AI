@@ -1,5 +1,6 @@
 {
-  "telegram_bot_token": "8780968685:AAFDfOHUmzYpnNQ1_PZOu2eTv6v-CPbb37g",
+  "telegram_bot_token": ":6322738178:AAEGHWmdjq8Z028OLuu_aRfLjWepMME-r2w",
+  "telegram_allowed_users": [],
   "model": {
     "base_url": "https://nirkyy-a.hf.space/v1",
     "api_key": "sk-843e3f05f05eacfe-55n2je-f2c2b844",
@@ -9,10 +10,13 @@
   "workspace": "/data/data/com.termux/files/home/.puru/workspace",
   "restrict_workspace": true,
   "max_iterations": 500,
-  "history_token_limit": 20000,
+  "history_token_limit": 30000,
   "host": "0.0.0.0",
   "port": 8080,
   "tools_preview": true,
   "loop_delay_seconds": 3,
-  "exec_memory_mb": 64
+  "exec_memory_mb": 64,
+  "skills_mode": "default",
+  "skills_allow": [],
+  "timezone": "Asia/Jakarta"
 }
