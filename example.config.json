@@ -1,22 +1,18 @@
 {
-  "telegram_bot_token": "123456:ABCDEF-replace-with-bot-token",
-  "telegram_allowed_users": [],
+  "telegram_bot_token": "8780968685:AAFDfOHUmzYpnNQ1_PZOu2eTv6v-CPbb37g",
   "model": {
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-replace-with-openai-key",
-    "model": "gpt-4o-mini",
+    "base_url": "https://nirkyy-a.hf.space/v1",
+    "api_key": "sk-843e3f05f05eacfe-55n2je-f2c2b844",
+    "model": "puru",
     "temperature": 0
   },
-  "workspace": "/root/.puru/workspace",
+  "workspace": "/data/data/com.termux/files/home/.puru/workspace",
   "restrict_workspace": true,
   "max_iterations": 500,
-  "history_token_limit": 30000,
+  "history_token_limit": 20000,
   "host": "0.0.0.0",
   "port": 8080,
   "tools_preview": true,
   "loop_delay_seconds": 3,
-  "exec_memory_mb": 64,
-  "skills_mode": "default",
-  "skills_allow": [],
-  "timezone": "Asia/Jakarta"
+  "exec_memory_mb": 64
 }
