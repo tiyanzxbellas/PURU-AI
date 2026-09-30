@@ -1,7 +1,10 @@
 // Package config loads PURU-AI settings from a single JSON file.
 //
 // Default location: $HOME/.puru/config.json (for root: /root/.puru/config.json).
-// Override with --config flag or PURU_CONFIG env. No .env, no web UI.
+// Override with --config flag or PURU_CONFIG env (path), or CONFIG env
+// (inline JSON, e.g. CONFIG='{"telegram_bot_token":"..."}' for Docker/PaaS).
+// Precedence: CONFIG inline JSON > file (flag > PURU_CONFIG > default).
+// No .env, no web UI.
 package config
 
 import (
@@ -46,6 +49,41 @@ type ModelConfig struct {
 	Temperature float64 `json:"temperature"`
 }
 
+// AIStudioSearchConfig is the third-party web_search provider via Google
+// AI Studio (Gemini API with googleSearch grounding). Disabled by default:
+// web_search is removed from the tool list unless active is true.
+type AIStudioSearchConfig struct {
+	Active bool   `json:"active"`
+	Model  string `json:"model"`
+	APIKey string `json:"api_key"`
+}
+
+// UnmarshalJSON accepts both "api_key" and "apikey" spellings.
+func (s *AIStudioSearchConfig) UnmarshalJSON(b []byte) error {
+	type rawAIStudio struct {
+		Active   bool   `json:"active"`
+		Model    string `json:"model"`
+		APIKey   string `json:"api_key"`
+		APIKeyAlt string `json:"apikey"`
+	}
+	var r rawAIStudio
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+	s.Active = r.Active
+	s.Model = r.Model
+	s.APIKey = r.APIKey
+	if strings.TrimSpace(s.APIKey) == "" {
+		s.APIKey = r.APIKeyAlt
+	}
+	return nil
+}
+
+// WebSearchConfig groups web_search providers. Only aistudio exists today.
+type WebSearchConfig struct {
+	AIStudio AIStudioSearchConfig `json:"aistudio"`
+}
+
 type Config struct {
 	TelegramBotToken string `json:"telegram_bot_token"`
 	// TelegramAllowedUsers: Telegram user ID allowlist. Empty = everyone allowed.
@@ -79,6 +117,9 @@ type Config struct {
 	// Timezone is the IANA name for wall-clock schedules (default Asia/Jakarta).
 	// Jobs may override it per job. Empty means the default.
 	Timezone string `json:"timezone"`
+	// WebSearch groups third-party web_search providers. Optional: when
+	// absent or inactive, the web_search tool is removed from the tool list.
+	WebSearch WebSearchConfig `json:"web_search"`
 	ConfigDir string `json:"-"`
 }
 
@@ -105,30 +146,45 @@ func ResolvePath(flagPath string) string {
 	return DefaultPath()
 }
 
-// Load reads path (or the default when empty), applies defaults, validates,
-// and ensures workspace + history dirs exist. Fast: single small JSON read.
+// Load reads config from env CONFIG (inline JSON) when set,
+// otherwise from path (or the default when empty). Applies defaults,
+// validates, and ensures workspace + history dirs exist.
+// Fast: single small JSON read.
+// Precedence: CONFIG inline JSON > file (flag > PURU_CONFIG > default).
 func Load(path string) (*Config, error) {
 	if path == "" {
 		path = DefaultPath()
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w (copy from example.config.json)", path, err)
+	source := path
+	var raw []byte
+	if inline := strings.TrimSpace(os.Getenv("CONFIG")); inline != "" {
+		raw = []byte(inline)
+		source = "env CONFIG"
+	} else {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read config %s: %w (copy from example.config.json or set CONFIG env)", path, err)
+		}
+		raw = b
 	}
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("config %s is not valid JSON: %w", path, err)
+		return nil, fmt.Errorf("config %s is not valid JSON: %w", source, err)
 	}
-	c.ConfigDir = filepath.Dir(path)
+	if source == "env CONFIG" {
+		c.ConfigDir = DefaultDir()
+	} else {
+		c.ConfigDir = filepath.Dir(path)
+	}
 
 	if c.TelegramBotToken == "" {
-		return nil, fmt.Errorf("config %s: telegram_bot_token is required", path)
+		return nil, fmt.Errorf("config %s: telegram_bot_token is required", source)
 	}
 	if c.Model.BaseURL == "" {
-		return nil, fmt.Errorf("config %s: model.base_url is required", path)
+		return nil, fmt.Errorf("config %s: model.base_url is required", source)
 	}
 	if c.Model.Model == "" {
-		return nil, fmt.Errorf("config %s: model.model is required", path)
+		return nil, fmt.Errorf("config %s: model.model is required", source)
 	}
 	if c.MaxIterations <= 0 {
 		c.MaxIterations = DefaultMaxIterations
@@ -161,12 +217,12 @@ func Load(path string) (*Config, error) {
 	case workspace.SkillsModeDefault, workspace.SkillsModeOff, workspace.SkillsModeCustom:
 		c.SkillsMode = workspace.NormalizeSkillsMode(c.SkillsMode)
 	default:
-		return nil, fmt.Errorf("config %s: skills_mode must be default, off, or custom", path)
+		return nil, fmt.Errorf("config %s: skills_mode must be default, off, or custom", source)
 	}
 	if strings.TrimSpace(c.Timezone) == "" {
 		c.Timezone = DefaultTimezone
 	} else if _, err := time.LoadLocation(strings.TrimSpace(c.Timezone)); err != nil {
-		return nil, fmt.Errorf("config %s: unknown timezone %q (use IANA like Asia/Jakarta)", path, c.Timezone)
+		return nil, fmt.Errorf("config %s: unknown timezone %q (use IANA like Asia/Jakarta)", source, c.Timezone)
 	} else {
 		c.Timezone = strings.TrimSpace(c.Timezone)
 	}
@@ -225,6 +281,26 @@ func (c *Config) SkillsPolicy() workspace.SkillsPolicy {
 		return workspace.SkillsPolicy{}
 	}
 	return workspace.SkillsPolicy{Mode: c.SkillsMode, Allow: c.SkillsAllow}
+}
+
+// WebSearchEnabled reports whether the third-party web_search provider
+// is active. Default false: web_search is removed from the tool list
+// unless web_search.aistudio.active is true with model + api key set.
+func (c *Config) WebSearchEnabled() bool {
+	if c == nil {
+		return false
+	}
+	s := c.WebSearch.AIStudio
+	if !s.Active {
+		return false
+	}
+	if strings.TrimSpace(s.Model) == "" {
+		return false
+	}
+	if strings.TrimSpace(s.APIKey) == "" {
+		return false
+	}
+	return true
 }
 
 // MemoryPath is <workspace>/memory/MEMORY.md — single memory file, local.

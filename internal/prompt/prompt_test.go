@@ -39,7 +39,7 @@ func TestGetRendersMemory(t *testing.T) {
 	}
 	// puruClaw identity (picoclaw personality, renamed): no leftover
 	// picoclaw/Pico references allowed.
-	for _, name := range []string{"puruClaw", "PuruClaw", "Puru"} {
+	for _, name := range []string{"PuruClaw", "A helpful AI assistant"} {
 		if !strings.Contains(out, name) {
 			t.Fatalf("identity %q missing in prompt", name)
 		}
@@ -68,6 +68,7 @@ func TestGetRendersMemory(t *testing.T) {
 		"<source>workspace</source>",
 		"find-skills",
 		"skill-creator",
+		"puruclaw-configure",
 		"memory/MEMORY.md",
 		"memory/context/",
 	} {
@@ -109,7 +110,7 @@ func TestGetRendersActiveSkills(t *testing.T) {
 		"## Active Skills",
 		"active for this request",
 		"### Skill: find-skills",
-		"PuruBoy",
+		"skills.sh",
 	} {
 		if !strings.Contains(out, section) {
 			t.Fatalf("active section %q missing in prompt", section)
@@ -233,7 +234,7 @@ func TestBuildOrdersLayersLikePicoclaw(t *testing.T) {
 		t.Fatalf("build error: %v", err)
 	}
 	order := []string{
-		"# puruClaw",
+		"# PuruClaw 🦞",
 		"## " + workspace.FileAgents,
 		"## Skills",
 		"## Memory",
@@ -289,7 +290,7 @@ func TestBuildSuppressFlags(t *testing.T) {
 	if !strings.Contains(out, "follow the subturn profile") {
 		t.Fatalf("overlay must survive suppressed system prompt")
 	}
-	if strings.Contains(out, "# puruClaw") {
+	if strings.Contains(out, "# PuruClaw 🦞") {
 		t.Fatalf("kernel identity must be suppressed")
 	}
 	out, err = Build(Request{SuppressDefaultSystemPrompt: true, ToolUseFallback: true})
