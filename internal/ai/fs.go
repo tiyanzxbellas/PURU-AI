@@ -1,11 +1,10 @@
 // Package ai: lightweight local assistant agent.
 //
-// Tools (9, all jailed to Workspace when
+// Tools (all jailed to Workspace when
 // Config.RestrictWorkspace is true) — declarations mirror picoclaw:
-//   - read_file (path, offset, length), write_file (path, content, overwrite),
-//     list_dir (path), edit_file_replace_string (path, old_text, new_text),
-//     edit_file_replace_line (path, start_line, end_line, new_text),
-//     edit_file_apply_patch (path, patch), exec (action
+//   - read_file (path, start_line, length), write_file (path, content, overwrite),
+//     list_dir (path), edit_file (path, old_string, new_string),
+//     run_shell_command (action
 //     wajib: run/list/poll/read/kill; command, sessionId, background, cwd,
 //     timeout opsional)
 //   - telegram_sendfile, telegram_getuser (need a Telegram request context)
@@ -15,8 +14,8 @@
 package ai
 
 import (
+	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,9 +25,12 @@ import (
 
 const maxExecOutput = 20_000
 
-// maxReadFileSize caps one read_file call (picoclaw parity: 64KB,
-// anti context-overflow).
-const maxReadFileSize = 64 * 1024
+// defaultReadFileLines and maxReadFileLines cap one read_file call
+// (line-based pagination, anti context-overflow).
+const (
+	defaultReadFileLines = 200
+	maxReadFileLines     = 2000
+)
 
 // resolvePath maps a tool path to an absolute filesystem path.
 // When restrict is true the result is jailed inside workspace:
@@ -110,223 +112,6 @@ func resolveWorkdir(workspace string, restrict bool, w string) (string, error) {
 	return abs, nil
 }
 
-// editLocalFileByLine replaces lines [startLine, endLine] (1-based, inclusive)
-// in a file with newText (may span lines; empty deletes the range).
-// The file's trailing newline is preserved.
-func editLocalFileByLine(workspace string, restrict bool, p string, startLine, endLine int64, newText string) error {
-	abs, err := resolvePath(workspace, restrict, p)
-	if err != nil {
-		return err
-	}
-	b, err := os.ReadFile(abs)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", p, err)
-	}
-	s := string(b)
-	trailingNL := strings.HasSuffix(s, "\n")
-	lines := strings.Split(s, "\n")
-	if trailingNL {
-		lines = lines[:len(lines)-1]
-	}
-	n := int64(len(lines))
-	if startLine < 1 || endLine < startLine || startLine > n || endLine > n {
-		return fmt.Errorf("line range %d-%d out of bounds (file %s has %d lines)", startLine, endLine, p, n)
-	}
-	var newLines []string
-	if newText != "" {
-		newLines = strings.Split(newText, "\n")
-	}
-	out := make([]string, 0, len(lines)-(int(endLine-startLine)+1)+len(newLines))
-	out = append(out, lines[:startLine-1]...)
-	out = append(out, newLines...)
-	out = append(out, lines[endLine:]...)
-	res := strings.Join(out, "\n")
-	if trailingNL && (len(res) > 0 || len(out) > 0) {
-		res += "\n"
-	}
-	return os.WriteFile(abs, []byte(res), 0o644)
-}
-
-// patchHunk is one @@ hunk of a unified diff.
-type patchHunk struct {
-	oldStart int // 1-based; 0 = insert before line 1
-	lines    []patchLine
-}
-
-type patchLine struct {
-	kind byte // ' ', '-', '+'
-	text string
-}
-
-// parseHunkHeader parses "@@ -oldStart[,oldCount] +newStart[,newCount] @@".
-// Declared counts are informational only (models often miscount); only the
-// oldStart position is used, context lines are verified strictly.
-func parseHunkHeader(line string) (int, bool) {
-	if !strings.HasPrefix(line, "@@") {
-		return 0, false
-	}
-	rest := strings.TrimPrefix(line, "@@")
-	end := strings.Index(rest, "@@")
-	if end < 0 {
-		return 0, false
-	}
-	fields := strings.Fields(strings.TrimSpace(rest[:end]))
-	if len(fields) < 2 {
-		return 0, false
-	}
-	oldRange := strings.TrimPrefix(fields[0], "-")
-	if i := strings.Index(oldRange, ","); i >= 0 {
-		oldRange = oldRange[:i]
-	}
-	var start int
-	if _, err := fmt.Sscanf(oldRange, "%d", &start); err != nil {
-		return 0, false
-	}
-	return start, true
-}
-
-// parseUnifiedPatch parses a git-style unified diff into hunks. File headers
-// (diff --git, index, ---, +++) and "\ No newline" markers are skipped.
-func parseUnifiedPatch(patch string) ([]patchHunk, error) {
-	var hunks []patchHunk
-	var cur *patchHunk
-	for _, raw := range strings.Split(patch, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		switch {
-		case strings.HasPrefix(line, "@@"):
-			start, ok := parseHunkHeader(line)
-			if !ok {
-				return nil, fmt.Errorf("malformed hunk header: %q", truncLine(line))
-			}
-			hunks = append(hunks, patchHunk{oldStart: start})
-			cur = &hunks[len(hunks)-1]
-		case strings.HasPrefix(line, "diff --git"),
-			strings.HasPrefix(line, "index "),
-			strings.HasPrefix(line, "--- "),
-			strings.HasPrefix(line, "+++ "),
-			strings.HasPrefix(line, `\ `):
-			continue
-		case cur == nil:
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			return nil, fmt.Errorf("patch line outside hunk: %q (patch must be a unified diff with @@ hunks)", truncLine(line))
-		case strings.HasPrefix(line, " "), strings.HasPrefix(line, "-"), strings.HasPrefix(line, "+"):
-			cur.lines = append(cur.lines, patchLine{kind: line[0], text: line[1:]})
-		case strings.TrimSpace(line) == "":
-			continue
-		default:
-			return nil, fmt.Errorf("malformed patch line: %q (hunk lines must start with ' ', '-' or '+')", truncLine(line))
-		}
-	}
-	if len(hunks) == 0 {
-		return nil, fmt.Errorf("no hunks found; patch must be a unified diff with @@ hunks")
-	}
-	for i, h := range hunks {
-		if len(h.lines) == 0 {
-			return nil, fmt.Errorf("hunk %d is empty", i+1)
-		}
-	}
-	return hunks, nil
-}
-
-func truncLine(s string) string {
-	if len(s) > 80 {
-		return s[:80] + "…"
-	}
-	return s
-}
-
-// applyUnifiedPatch applies hunks to original content, verifying every
-// context (' ') and removal ('-') line matches exactly. Hunks must be in
-// ascending, non-overlapping order (standard unified-diff semantics: oldStart
-// refers to positions in the original file).
-func applyUnifiedPatch(original string, hunks []patchHunk) (string, error) {
-	trailingNL := strings.HasSuffix(original, "\n")
-	orig := strings.Split(original, "\n")
-	if trailingNL {
-		orig = orig[:len(orig)-1]
-	}
-	var out []string
-	added, removed := 0, 0
-	cursor := 0 // next unconsumed index in orig (0-based)
-	for i, h := range hunks {
-		pos := h.oldStart - 1 // 0-based; oldStart=0 inserts before line 1
-		if h.oldStart == 0 {
-			pos = 0
-		}
-		if pos < cursor {
-			return "", fmt.Errorf("hunk %d overlaps a previous hunk (hunks must be ascending)", i+1)
-		}
-		if pos > len(orig) {
-			return "", fmt.Errorf("hunk %d starts at line %d but file has %d lines", i+1, h.oldStart, len(orig))
-		}
-		out = append(out, orig[cursor:pos]...)
-		cursor = pos
-		for _, pl := range h.lines {
-			switch pl.kind {
-			case ' ', '-':
-				if cursor >= len(orig) {
-					return "", fmt.Errorf("hunk %d: expected %q past end of file (%d lines)", i+1, truncLine(pl.text), len(orig))
-				}
-				if orig[cursor] != pl.text {
-					return "", fmt.Errorf("hunk %d context mismatch at file line %d: expected %q, found %q", i+1, cursor+1, truncLine(pl.text), truncLine(orig[cursor]))
-				}
-				if pl.kind == ' ' {
-					out = append(out, orig[cursor])
-				} else {
-					removed++
-				}
-				cursor++
-			case '+':
-				out = append(out, pl.text)
-				added++
-			}
-		}
-	}
-	out = append(out, orig[cursor:]...)
-	res := strings.Join(out, "\n")
-	if trailingNL && len(out) > 0 {
-		res += "\n"
-	}
-	return res, nil
-}
-
-// editLocalFileApplyPatch applies a git-style unified-diff patch to a file.
-// Returns a short stat summary for the model.
-func editLocalFileApplyPatch(workspace string, restrict bool, p, patch string) (string, error) {
-	abs, err := resolvePath(workspace, restrict, p)
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(abs)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", p, err)
-	}
-	hunks, err := parseUnifiedPatch(patch)
-	if err != nil {
-		return "", err
-	}
-	res, err := applyUnifiedPatch(string(b), hunks)
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(abs, []byte(res), 0o644); err != nil {
-		return "", err
-	}
-	added, removed := 0, 0
-	for _, h := range hunks {
-		for _, pl := range h.lines {
-			if pl.kind == '+' {
-				added++
-			} else if pl.kind == '-' {
-				removed++
-			}
-		}
-	}
-	return fmt.Sprintf("Patch applied: %s (%d hunk(s), +%d/-%d lines)", p, len(hunks), added, removed), nil
-}
-
 func editLocalFile(workspace string, restrict bool, p, oldStr, newStr string) error {
 	abs, err := resolvePath(workspace, restrict, p)
 	if err != nil {
@@ -342,7 +127,7 @@ func editLocalFile(workspace string, restrict bool, p, oldStr, newStr string) er
 	if n := strings.Count(s, oldStr); n == 1 {
 		return os.WriteFile(abs, []byte(strings.Replace(s, oldStr, newStr, 1)), 0o644)
 	} else if n > 1 {
-		return fmt.Errorf("old_text found %d times; provide more context to make it unique", n)
+		return fmt.Errorf("old_string found %d times; provide more context to make it unique", n)
 	}
 
 	// 2. Line-based fuzzy match (ignores leading/trailing whitespace and line endings)
@@ -350,7 +135,7 @@ func editLocalFile(workspace string, restrict bool, p, oldStr, newStr string) er
 	searchLines := strings.Split(strings.TrimSpace(oldStr), "\n")
 
 	if len(searchLines) == 0 || (len(searchLines) == 1 && searchLines[0] == "") {
-		return fmt.Errorf("old_text is empty")
+		return fmt.Errorf("old_string is empty")
 	}
 
 	var matchIdx = -1
@@ -400,26 +185,26 @@ func editLocalFile(workspace string, restrict bool, p, oldStr, newStr string) er
 		return fmt.Errorf("fuzzy match found %d times; provide more context to make it unique", matchesFound)
 	}
 
-	return fmt.Errorf("old_text not found in %s. Make sure the text exists exactly (including indentation and spacing)", p)
+	return fmt.Errorf("old_string not found in %s. Make sure the text exists exactly (including indentation and spacing)", p)
 }
 
-// readLocalFile reads path with byte pagination (picoclaw read_file parity).
-// Returns the full LLM text: "[file: base | total: N bytes | read: bytes a-b]"
-// header + "[TRUNCATED ... offset=X ...]" / "[END OF FILE ...]" trailer, or
-// "[END OF FILE - no content at this offset]" when offset is past the end.
-func readLocalFile(workspace string, restrict bool, p string, offset, length int64) (string, error) {
+// readLocalFile reads path with line pagination.
+// Returns the full LLM text: "[file: base | total: N lines | read: lines a-b]"
+// header + "[TRUNCATED ... start_line=X ...]" / "[END OF FILE ...]" trailer, or
+// "[END OF FILE - no content at this start_line]" when start_line is past the end.
+func readLocalFile(workspace string, restrict bool, p string, startLine, length int64) (string, error) {
 	abs, err := resolvePath(workspace, restrict, p)
 	if err != nil {
 		return "", err
 	}
-	if offset < 0 {
-		return "", fmt.Errorf("offset must be >= 0")
+	if startLine <= 0 {
+		startLine = 1
 	}
 	if length <= 0 {
 		return "", fmt.Errorf("length must be > 0")
 	}
-	if length > maxReadFileSize {
-		length = maxReadFileSize
+	if length > maxReadFileLines {
+		length = maxReadFileLines
 	}
 	f, err := os.Open(abs)
 	if err != nil {
@@ -432,63 +217,51 @@ func readLocalFile(workspace string, restrict bool, p string, offset, length int
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	st, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("failed to stat file: %w", err)
 	}
-	if info.IsDir() {
+	if st.IsDir() {
 		return "", fmt.Errorf("path is a directory: %s. Use list_dir to see its contents", p)
 	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return "", fmt.Errorf("failed to seek to offset %d: %w", offset, err)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 256*1024)
+	var all []string
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.ContainsRune(line, 0) {
+			return "", fmt.Errorf("file appears to be binary")
+		}
+		all = append(all, line)
 	}
-	probe := make([]byte, length+1)
-	n, rerr := io.ReadFull(f, probe)
-	if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
-		return "", fmt.Errorf("failed to read file content: %w", rerr)
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("failed to read file content: %w", err)
 	}
-	hasMore := int64(n) > length
-	if int64(n) > length {
-		n = int(length)
+	total := len(all)
+	if total == 0 || startLine > int64(total) {
+		return "[END OF FILE - no content at this start_line]", nil
 	}
-	data := probe[:n]
-	if len(data) == 0 {
-		return "[END OF FILE - no content at this offset]", nil
+	startIdx := int(startLine - 1)
+	endIdx := startIdx + int(length)
+	if endIdx > total {
+		endIdx = total
 	}
-	if isBinaryData(data) {
-		return "", fmt.Errorf("file appears to be binary")
-	}
-	readEnd := offset + int64(len(data))
-	header := fmt.Sprintf("[file: %s | total: %d bytes | read: bytes %d-%d]",
-		filepath.Base(p), info.Size(), offset, readEnd-1)
-	if hasMore {
-		header += fmt.Sprintf("\n[TRUNCATED - file has more content. Call read_file again with offset=%d to continue.]", readEnd)
+	page := all[startIdx:endIdx]
+	data := strings.Join(page, "\n")
+	readEnd := int64(startIdx + len(page))
+	header := fmt.Sprintf("[file: %s | total: %d lines | read: lines %d-%d]",
+		filepath.Base(p), total, startLine, readEnd)
+	if endIdx < total {
+		header += fmt.Sprintf("\n[TRUNCATED - file has more content. Call read_file again with start_line=%d to continue.]", endIdx+1)
 	} else {
 		header += "\n[END OF FILE - no further content.]"
 	}
-	return header + "\n\n" + string(data), nil
-}
-
-// isBinaryData sniffs binary content (NUL byte or non-text ratio).
-func isBinaryData(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	sample := data
-	if len(sample) > 512 {
-		sample = sample[:512]
-	}
-	for _, b := range sample {
-		if b == 0 {
-			return true
-		}
-	}
-	return false
+	return header + "\n\n" + data, nil
 }
 
 // writeLocalFile writes content, replacing any existing file (picoclaw
 // write_file parity). Without overwrite=true an existing file is refused with
-// a hint to use append_file/edit_file_* instead.
+// a hint to use append_file/edit_file instead.
 func writeLocalFile(workspace string, restrict bool, p, content string, overwrite bool) error {
 	abs, err := resolvePath(workspace, restrict, p)
 	if err != nil {
@@ -499,7 +272,7 @@ func writeLocalFile(workspace string, restrict bool, p, content string, overwrit
 			return fmt.Errorf("cannot write: %s is a directory. Use list_dir to see its contents", p)
 		}
 		if !overwrite {
-			return fmt.Errorf("file %q already exists with overwrite=false. To replace the whole file pass overwrite=true, for example {\"path\": %q, \"content\": \"...\", \"overwrite\": true}. To keep the current contents, use append_file to add or edit_file_replace_string, edit_file_replace_line, or edit_file_apply_patch for partial changes.", p, p)
+			return fmt.Errorf("file %q already exists with overwrite=false. To replace the whole file pass overwrite=true, for example {\"path\": %q, \"content\": \"...\", \"overwrite\": true}. To keep the current contents, use append_file to add or edit_file for partial changes.", p, p)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -572,6 +345,146 @@ func listLocalDir(workspace string, restrict bool, p string) (string, error) {
 		return "(empty directory)", nil
 	}
 	return sb.String(), nil
+}
+
+// grepLocal searches a file or a directory tree for a literal keyword.
+// path may point at one file (single-file search) or a directory
+// (recursive walk including subfolders). ext optionally filters by
+// extension, e.g. "go" or ".go,.md" (empty = all files).
+// Returns "rel:line: text" lines, or "(no matches)" when nothing matches.
+func grepLocal(workspace string, restrict bool, p, keyword, ext string, maxResults int) (string, error) {
+	if strings.TrimSpace(keyword) == "" {
+		return "", fmt.Errorf("keyword is required")
+	}
+	if strings.TrimSpace(p) == "" {
+		p = "."
+	}
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	if maxResults > 200 {
+		maxResults = 200
+	}
+	abs, err := resolvePath(workspace, restrict, p)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("path not found: %s", p)
+		}
+		return "", fmt.Errorf("cannot access path: %w", err)
+	}
+	exts := parseGrepExt(ext)
+	var files []string
+	if !st.IsDir() {
+		files = []string{abs}
+	} else {
+		err = filepath.WalkDir(abs, func(fp string, d os.DirEntry, werr error) error {
+			if werr != nil {
+				return nil // skip unreadable, keep going
+			}
+			if d.IsDir() {
+				if d.Name() == ".git" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if len(exts) > 0 && !exts[strings.ToLower(filepath.Ext(d.Name()))] {
+				return nil
+			}
+			if restrict && !insideDir(fp, workspace) {
+				return nil
+			}
+			if info, err := d.Info(); err == nil && info.Size() > 2<<20 {
+				return nil // skip files >2MB, read_file covers them
+			}
+			files = append(files, fp)
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to walk directory: %w", err)
+		}
+		sort.Strings(files)
+	}
+	var sb strings.Builder
+	matched := 0
+	truncated := false
+	for _, fp := range files {
+		if len(exts) > 0 && !st.IsDir() && !exts[strings.ToLower(filepath.Ext(fp))] {
+			continue
+		}
+		n, done, _ := grepOneFile(&sb, workspace, fp, keyword, maxResults-matched)
+		matched += n
+		if done {
+			truncated = true
+			break
+		}
+	}
+	if matched == 0 {
+		return "(no matches)", nil
+	}
+	out := sb.String()
+	if truncated {
+		out += fmt.Sprintf("... [truncated at %d matches, narrow path/ext/keyword]\n", maxResults)
+	}
+	return out, nil
+}
+
+// parseGrepExt normalizes "go" / ".go,.md" into a set like {".go":true}.
+func parseGrepExt(ext string) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range strings.Split(ext, ",") {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		out[e] = true
+	}
+	return out
+}
+
+// grepOneFile appends "rel:line: text" hits from one file.
+// Returns (newHits, hitLimit, skippedBinary).
+func grepOneFile(sb *strings.Builder, workspace, fp, keyword string, budget int) (int, bool, bool) {
+	f, err := os.Open(fp)
+	if err != nil {
+		return 0, false, false
+	}
+	defer f.Close()
+	rel := fp
+	if workspace != "" {
+		if r, err := filepath.Rel(workspace, fp); err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
+			rel = filepath.ToSlash(r)
+		}
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 256*1024)
+	hits := 0
+	line := 0
+	for sc.Scan() {
+		line++
+		text := sc.Text()
+		if strings.ContainsRune(text, 0) {
+			return hits, false, true // binary file, skip silently
+		}
+		if !strings.Contains(text, keyword) {
+			continue
+		}
+		if len(text) > 500 {
+			text = text[:500] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("%s:%d: %s\n", rel, line, text))
+		hits++
+		if hits >= budget {
+			return hits, true, false
+		}
+	}
+	return hits, false, false
 }
 
 func defaultShell() (string, []string) {

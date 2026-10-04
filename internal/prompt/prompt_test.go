@@ -27,19 +27,19 @@ func TestGetRendersMemory(t *testing.T) {
 	if !strings.Contains(out, ws) {
 		t.Fatalf("workspace not injected")
 	}
-	for _, tool := range []string{"read_file", "write_file", "list_dir", "edit_file_replace_string", "edit_file_replace_line", "edit_file_apply_patch", "append_file", "exec", "telegram_sendfile", "telegram_getuser"} {
+	for _, tool := range []string{"read_file", "write_file", "list_dir", "edit_file", "append_file", "run_shell_command", "telegram_sendfile", "telegram_getuser"} {
 		_ = tool
 	}
 	// Picoclaw 1:1 — tools are declared via native function calls only and
 	// must not be embedded as a list in the system prompt.
-	for _, banned := range []string{"## Tools", "web_search —", "web_fetch —", "telegram_sendfile —", "telegram_getuser —", "edit_file_apply_patch —"} {
+	for _, banned := range []string{"## Tools", "web_search —", "web_fetch —", "telegram_sendfile —", "telegram_getuser —", "edit_file —"} {
 		if strings.Contains(out, banned) {
 			t.Fatalf("tool list %q must not be in prompt", banned)
 		}
 	}
 	// puruClaw identity (picoclaw personality, renamed): no leftover
 	// picoclaw/Pico references allowed.
-	for _, name := range []string{"PuruClaw", "A helpful AI assistant"} {
+	for _, name := range []string{"PuruClaw", "You are PuruClaw, a helpful AI assistant."} {
 		if !strings.Contains(out, name) {
 			t.Fatalf("identity %q missing in prompt", name)
 		}
@@ -53,22 +53,14 @@ func TestGetRendersMemory(t *testing.T) {
 		"ALWAYS use tools",
 		"Be helpful and accurate",
 		"Context summaries",
-		"Onboarding placeholders",
-		"Greet warmly",
-		"introduce yourself as PuruClaw",
-		"PLACEHOLDER",
-		"Working Principles",
-		"Personality",
-		"Values",
-		"## Skills",
+		"**Memory** - When interacting with me if something seems memorable, update",
+		"# Skills",
 		"The following skills extend your capabilities.",
-		"They are NOT loaded",
-		"call use_skill",
+		"To use a skill, read its SKILL.md file using the read_file tool.",
 		"<skills>",
 		"<source>workspace</source>",
 		"find-skills",
 		"skill-creator",
-		"puruclaw-configure",
 		"memory/MEMORY.md",
 		"memory/context/",
 	} {
@@ -82,7 +74,7 @@ func TestGetRendersMemory(t *testing.T) {
 		"find-skills?query=",
 		"install-skills?source=",
 		"Manage skills",
-		"## Active Skills",
+		"# Active Skills",
 	} {
 		if strings.Contains(out, inline) {
 			t.Fatalf("inline %q must not be in prompt", inline)
@@ -107,7 +99,7 @@ func TestGetRendersActiveSkills(t *testing.T) {
 		t.Fatalf("template error: %v", err)
 	}
 	for _, section := range []string{
-		"## Active Skills",
+		"# Active Skills",
 		"active for this request",
 		"### Skill: find-skills",
 		"skills.sh",
@@ -134,7 +126,7 @@ func TestGetSkillsOffSuppressesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("template error: %v", err)
 	}
-	for _, banned := range []string{"## Skills", "## Active Skills", "<skills>", "find-skills"} {
+	for _, banned := range []string{"# Skills", "# Active Skills", "<skills>", "find-skills"} {
 		if strings.Contains(out, banned) {
 			t.Fatalf("off policy must drop %q", banned)
 		}
@@ -236,8 +228,8 @@ func TestBuildOrdersLayersLikePicoclaw(t *testing.T) {
 	order := []string{
 		"# PuruClaw 🦞",
 		"## " + workspace.FileAgents,
-		"## Skills",
-		"## Memory",
+		"# Skills",
+		"# Memory",
 		"## Current Time",
 		"CONTEXT_SUMMARY:",
 	}
@@ -263,7 +255,7 @@ func TestBuildSuppressFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	for _, banned := range []string{"## Skills", "## Active Skills", "<skills>"} {
+	for _, banned := range []string{"# Skills", "# Active Skills", "<skills>"} {
 		if strings.Contains(out, banned) {
 			t.Fatalf("suppressed %q must not appear", banned)
 		}
@@ -367,12 +359,12 @@ func TestBuildHidesOnboardingWhenPlaceholdersFilled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if strings.Contains(out, "Onboarding placeholders") {
-		t.Fatalf("onboarding rule must be hidden when all placeholders are filled")
+	if strings.Contains(out, "**Onboarding placeholders**") {
+		t.Fatalf("onboarding rule must never be injected (picoclaw parity)")
 	}
 }
 
-func TestBuildShowsOnboardingWhilePlaceholderRemains(t *testing.T) {
+func TestBuildOmitsOnboardingRuleEvenWithPlaceholders(t *testing.T) {
 	ws := t.TempDir()
 	if err := workspace.Ensure(ws); err != nil {
 		t.Fatal(err)
@@ -385,7 +377,7 @@ func TestBuildShowsOnboardingWhilePlaceholderRemains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if !strings.Contains(out, "Onboarding placeholders") {
-		t.Fatalf("onboarding rule must stay while USER.md still has placeholders")
+	if strings.Contains(out, "**Onboarding placeholders**") {
+		t.Fatalf("onboarding rule must not be injected even while USER.md has placeholders")
 	}
 }

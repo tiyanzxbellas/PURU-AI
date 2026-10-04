@@ -1,6 +1,6 @@
 // Schedule tool exposes scheduled jobs to the agent.
 //
-// One tool named "schedule" with an "action" switch keeps the tool count
+// One tool named "manage_schedule" with an "action" switch keeps the tool count
 // small: add, list, get, update, remove, enable, disable. Jobs persist in
 // <workspace>/schedule/jobs.json and fire as agent turns via schedule.Runner.
 package ai
@@ -33,29 +33,12 @@ func scheduleDefaultTimezone(a *Agent) string {
 }
 
 // buildScheduleTool returns the agent-facing schedule tool.
-func buildScheduleTool(a *Agent, opts *ProcessOptions, mk func(string, string, map[string]any, func(context.Context, map[string]any) (any, error)) *Tool, errVal func(error) (any, error)) *Tool {
-	desc := "Manage scheduled tasks."
-	return mk("schedule", desc,
-		objSchema([]string{"action"}, map[string]any{
-			"action":        enumProp("Action: add, list, get, update, remove, enable, disable", []string{"add", "list", "get", "update", "remove", "enable", "disable"}),
-			"name":          strProp("Short job name (add only, optional)."),
-			"prompt":        strProp("What the agent should do when the job fires (add/update, required for add)."),
-			"type":          enumProp("Schedule type: once, every, daily, cron (add/update).", []string{"once", "every", "daily", "cron"}),
-			"timezone":      strProp("IANA timezone for wall-clock times (default Asia/Jakarta)."),
-			"run_once_at":   strProp("One-time run time, e.g. 18:00, 2026-09-29 18:00 (once)."),
-			"every_seconds": intProp("Repeat interval in seconds, min 60 (every).", 3600),
-			"daily_time":    strProp("Daily time HH:MM 24-hour, e.g. 06:00 (daily)."),
-			"weekdays":      strProp("Comma weekdays mon,tue,wed,thu,fri,sat,sun (daily, optional)."),
-			"cron_expr":     strProp("Cron expression, 5 fields minute hour dom month dow (cron)."),
-			"end_at":        strProp("Stop after this time, e.g. 2026-10-05 00:00 (optional, for a few days only)."),
-			"days":          intProp("Run only for N days from now (optional shortcut, sets end date).", 0),
-			"max_runs":      intProp("Stop after N runs (optional, for once or limited repeats).", 0),
-			"job_id":        strProp("Job id for get/update/remove/enable/disable."),
-		}),
+func buildScheduleTool(a *Agent, opts *ProcessOptions, mk func(string, func(context.Context, map[string]any) (any, error)) *Tool, errVal func(error) (any, error)) *Tool {
+	return mk("manage_schedule",
 		func(ctx context.Context, args map[string]any) (any, error) {
 			store := scheduleStoreFor(a)
 			if store == nil {
-				return errVal(fmt.Errorf("schedule unavailable: workspace not configured"))
+				return errVal(fmt.Errorf("manage_schedule unavailable: workspace not configured"))
 			}
 			action := strings.ToLower(strings.TrimSpace(argStr(args, "action")))
 			now := time.Now().UTC()
@@ -193,7 +176,7 @@ func scheduleJobFromArgs(a *Agent, args map[string]any, chatID, userID int64, no
 			return schedule.Job{}, err
 		}
 		job.DailyTime = daily
-		weekdays, err := schedule.ParseWeekdays(argStr(args, "weekdays"))
+		weekdays, err := schedule.ParseWeekdays(args["weekdays"])
 		if err != nil {
 			return schedule.Job{}, err
 		}

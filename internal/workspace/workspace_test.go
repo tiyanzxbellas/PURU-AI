@@ -31,7 +31,7 @@ func TestEnsureSeedsBootstrapFiles(t *testing.T) {
 			t.Fatalf("%s must exist: %v", dir, err)
 		}
 	}
-	for _, skill := range []string{"find-skills", "skill-creator", "puruclaw-configure"} {
+	for _, skill := range []string{"find-skills", "skill-creator"} {
 		data, err := os.ReadFile(SkillFile(ws, skill))
 		if err != nil {
 			t.Fatalf("builtin skill %s must be seeded: %v", skill, err)
@@ -40,14 +40,7 @@ func TestEnsureSeedsBootstrapFiles(t *testing.T) {
 			t.Fatalf("builtin skill %s must not be empty", skill)
 		}
 	}
-	// puruclaw-configure must point at the canonical example config on main.
-	cfgData, err := os.ReadFile(SkillFile(ws, "puruclaw-configure"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(cfgData), "example.config.json") {
-		t.Fatalf("puruclaw-configure must reference example.config.json, got %q", string(cfgData)[:200])
-	}
+	// Only two builtins remain: find-skills + skill-creator.
 }
 
 func TestEnsureNeverOverwrites(t *testing.T) {
@@ -159,7 +152,7 @@ func TestSkillsCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := BuildSkillsSummary(ws, SkillsPolicy{})
-	for _, want := range []string{"<skills>", "<source>workspace</source>", "find-skills", "skill-creator", "puruclaw-configure"} {
+	for _, want := range []string{"<skills>", "<source>workspace</source>", "find-skills", "skill-creator"} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("builtin catalog must contain %q, got %q", want, summary)
 		}
@@ -180,7 +173,7 @@ func TestSkillsCatalog(t *testing.T) {
 			t.Fatalf("skill source must be workspace, got %q", skill.Source)
 		}
 	}
-	for _, want := range []string{"find-skills", "skill-creator", "puruclaw-configure", "web-design-guidelines"} {
+	for _, want := range []string{"find-skills", "skill-creator", "web-design-guidelines"} {
 		if !names[want] {
 			t.Fatalf("ListSkills missing %q: %+v", want, installed)
 		}
@@ -188,6 +181,30 @@ func TestSkillsCatalog(t *testing.T) {
 	summary = BuildSkillsSummary(ws, SkillsPolicy{})
 	if !strings.Contains(summary, "web-design-guidelines") || !strings.Contains(summary, "Review UI code") {
 		t.Fatalf("summary must list skill name and description, got %q", summary)
+	}
+}
+
+func TestListSkillsFoldedFrontmatterDescription(t *testing.T) {
+	ws := t.TempDir()
+	if err := Ensure(ws); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(SkillsDir(ws), "ponytail")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: ponytail\ndescription: >\n  Forces the laziest solution that actually works, simplest, shortest, most\n  minimal. Channels a senior dev who has seen everything.\nargument-hint: \"[lite|full|ultra]\"\nlicense: MIT\n---\n\n# Ponytail\n"
+	if err := os.WriteFile(filepath.Join(skillDir, FileSkill), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var desc string
+	for _, s := range ListSkills(ws) {
+		if s.Name == "ponytail" {
+			desc = s.Description
+		}
+	}
+	if !strings.Contains(desc, "Forces the laziest solution") || strings.Contains(desc, ">") || strings.Contains(desc, "argument-hint") {
+		t.Fatalf("folded description must be flattened, got %q", desc)
 	}
 }
 
