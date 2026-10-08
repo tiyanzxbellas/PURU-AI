@@ -35,13 +35,14 @@ type fakeUserError string
 func (e fakeUserError) Error() string { return string(e) }
 
 func TestTelegramToolsNeedContext(t *testing.T) {
-	tools := BuildTools(testAgent(t.TempDir()), nil)
+	ws := t.TempDir()
+	tools := BuildTools(testAgent(ws), nil)
 	ctx := context.Background()
 
 	if r, _ := tools["telegram_getuser"].Run(ctx, map[string]any{}); !hasErr(r) {
 		t.Errorf("getuser tanpa user harus error, got %v", r)
 	}
-	if r, _ := tools["telegram_sendfile"].Run(ctx, map[string]any{"path": "a.txt"}); !hasErr(r) {
+	if r, _ := tools["telegram_sendfile"].Run(ctx, map[string]any{"path": filepath.Join(ws, "a.txt")}); !hasErr(r) {
 		t.Errorf("sendfile tanpa sender harus error, got %v", r)
 	}
 }
@@ -68,11 +69,11 @@ func TestTelegramGetUserByID(t *testing.T) {
 	if m["id"] != int64(123) || m["first_name"] != "Siti" || m["last_name"] != "Ayu" || m["bio"] != "halo saya siti" {
 		t.Fatalf("got %v", r)
 	}
-	// user tak dikenal -> error value
+	// unknown user -> error value
 	if r, _ := tools["telegram_getuser"].Run(context.Background(), map[string]any{"user_id": float64(999)}); !hasErr(r) {
 		t.Errorf("unknown user harus error, got %v", r)
 	}
-	// user_id tanpa Telegram client -> error value
+	// user_id without a Telegram client -> error value
 	toolsNoTG := BuildTools(testAgent(t.TempDir()), &ProcessOptions{ChatID: 7})
 	if r, _ := toolsNoTG["telegram_getuser"].Run(context.Background(), map[string]any{"user_id": float64(123)}); !hasErr(r) {
 		t.Errorf("tanpa client harus error, got %v", r)
@@ -89,15 +90,15 @@ func TestTelegramSendFile(t *testing.T) {
 	a.Telegram = sender
 	opts := &ProcessOptions{ChatID: 9}
 	tools := BuildTools(a, opts)
-	r, _ := tools["telegram_sendfile"].Run(context.Background(), map[string]any{"path": "doc.txt", "caption": "nih"})
+	r, _ := tools["telegram_sendfile"].Run(context.Background(), map[string]any{"path": filepath.Join(ws, "doc.txt"), "caption": "nih"})
 	if m, _ := r.(map[string]any); m["success"] != true {
 		t.Fatalf("sendfile failed: %v", r)
 	}
 	if sender.chatID != 9 || sender.filename != "doc.txt" || string(sender.data) != "isi file" || sender.caption != "nih" {
 		t.Fatalf("sender got %+v", sender)
 	}
-	// escape tetap ditolak
-	if r, _ := tools["telegram_sendfile"].Run(context.Background(), map[string]any{"path": "../x.txt"}); !hasErr(r) {
+	// escape is still rejected
+	if r, _ := tools["telegram_sendfile"].Run(context.Background(), map[string]any{"path": filepath.Join(ws, "..", "x.txt")}); !hasErr(r) {
 		t.Errorf("sendfile escape harus error, got %v", r)
 	}
 }

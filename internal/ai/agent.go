@@ -1,7 +1,7 @@
 // Package ai implements the lightweight local tool-calling agent.
 //
 // Single model from config.json, 14 tools by default (read_file, write_file,
-// list_dir, grep, edit_file, append_file, exec, telegram_sendfile,
+// list_dir, edit_file, edit_file_by_line, append_file, exec, telegram_sendfile,
 // telegram_getuser, get_env, web_fetch, schedule, use_skill,
 // stop_skill)
 // plus opt-in web_search (15th, only when at least one web_search provider
@@ -168,8 +168,8 @@ func responseFromSteps(steps []schema.AgentStep, reasoningByStep []string) []*me
 		}
 		as := &messages.Message{Role: "assistant"}
 		messages.SetContentParts(as, parts)
-		// Pertahankan apa adanya termasuk respon kosong — jangan di-prune
-		// agar urutan tool-call/tool-result tidak halusinasi.
+		// Keep as-is, including empty responses — do not prune, so the
+		// tool-call/tool-result sequence can't hallucinate.
 		out = append(out, as)
 		for _, s := range group {
 			toolMsg := &messages.Message{Role: "tool"}
@@ -323,7 +323,7 @@ func (ra *requestAgent) Plan(
 	inputs map[string]string,
 	options ...chains.ChainCallOption,
 ) ([]schema.AgentAction, *schema.AgentFinish, error) {
-	// Jeda antar loop (bukan sebelum iterasi pertama); hormat ctx cancel.
+	// Sleep between loops (not before the first iteration); honor ctx cancel.
 	if ra.plans > 0 && ra.loopDelay > 0 {
 		sleepCtx(ctx, ra.loopDelay)
 		if ctx.Err() != nil {
