@@ -1,0 +1,298 @@
+name: Android APK
+
+# Builds the self-contained launcher APK (android/): the puru Go binary is
+# cross-built for the phone ABIs, bundled as jniLibs/<abi>/libpuru.so, and the
+# Kotlin app is assembled around it.
+#
+# Triggers:
+#   - workflow_call:    the Release workflow calls this with its new tag, so the
+#                       APK lands on the release it just published. (A tag
+#                       pushed with GITHUB_TOKEN cannot trigger workflows, which
+#                       is why this is a call instead of a tag push filter.)
+#   - workflow_dispatch: manual build; fill the tag input to stamp the version
+#                       and attach the APK to that release.
+#   - push to main:     normal verification build.
+#
+# Artifact: puru-launcher-apk. Every run also force-pushes a build report to the
+# debug-android-build branch, because job logs need admin rights to read.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to stamp and attach the APK to'
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to stamp and attach the APK to (optional)'
+        required: false
+        type: string
+        default: ''
+  push:
+    branches: [main]
+    # Tag push tidak perlu didengar di sini: Release workflow sudah memanggil
+    # workflow ini sebagai reusable workflow saat tag v*/V* di-push, jadi
+    # mendengarkan tag akan menggandakan build APK.
+    paths:
+      - 'android/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  # Event name is part of the key so a release build is never cancelled by a
+  # concurrent push build on the same ref.
+  group: android-apk-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The inputs context only exists for workflow_call/workflow_dispatch, so
+      # it is read in a step the push trigger never runs.
+      - name: Resolve release tag (call or manual dispatch)
+        if: github.event_name != 'push'
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "release tag: ${TAG:-none}"
+
+      - name: Resolve release tag (push)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          TAG=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "release tag: ${TAG:-none}"
+
+      - name: Stamp version
+        run: |
+          set -euo pipefail
+          if [ -n "${RELEASE_TAG}" ]; then
+            VERSION="${RELEASE_TAG}"
+          else
+            VERSION="main-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "PURU_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "PURU_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "version $VERSION (code ${GITHUB_RUN_NUMBER})"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Build puru binaries for Android ABIs
+        run: |
+          set -euo pipefail
+          # Android tidak punya /etc/resolv.conf, jadi resolver pure-Go tidak bisa
+          # DNS (Go net/conf.go: "DNS requests don't work on Android, so prefer
+          # the cgo resolver"). Binary di-build GOOS=android + cgo supaya lookup
+          # lewat bionic/getaddrinfo → netd, sama seperti aplikasi Android lain.
+          # NDK terbaru (30.x) bisa menaikkan minimum API, jadi pakai NDK default
+          # image (27.3) yang masih punya wrapper API 21 untuk kedua ABI.
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-}}}"
+          if [ -z "$NDK" ] || [ ! -d "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+            echo "no usable Android NDK in the runner image (ANDROID_NDK_*_HOME)" >&2
+            exit 1
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for cc in aarch64-linux-android21-clang armv7a-linux-androideabi21-clang; do
+            if [ ! -x "$TOOLCHAIN/$cc" ]; then
+              echo "missing NDK compiler: $TOOLCHAIN/$cc" >&2
+              exit 1
+            fi
+          done
+          echo "NDK: $NDK"
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/armeabi-v7a
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$TOOLCHAIN/aarch64-linux-android21-clang" \
+            go build -trimpath -ldflags="-s -w -X main.version=${PURU_VERSION_NAME}" \
+            -o android/app/src/main/jniLibs/arm64-v8a/libpuru.so ./cmd/puru
+          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC="$TOOLCHAIN/armv7a-linux-androideabi21-clang" \
+            go build -trimpath -ldflags="-s -w -X main.version=${PURU_VERSION_NAME}" \
+            -o android/app/src/main/jniLibs/armeabi-v7a/libpuru.so ./cmd/puru
+          file android/app/src/main/jniLibs/*/libpuru.so
+          ls -lh android/app/src/main/jniLibs/*/libpuru.so
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Ensure Android SDK platform 35
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDK" ]; then
+            echo "no ANDROID_SDK_ROOT/ANDROID_HOME in the runner image" >&2
+            exit 1
+          fi
+          if [ ! -d "$SDK/platforms/android-35" ]; then
+            yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          ls "$SDK/platforms"
+
+      - name: Restore cached signing keystore
+        if: env.ANDROID_KEYSTORE_BASE64 == ''
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/puru-launcher.jks
+          key: puru-launcher-keystore-v1
+
+      - name: Prepare signing keystore
+        run: |
+          set -euo pipefail
+          KS="$RUNNER_TEMP/puru-launcher.jks"
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ]; then
+            # Permanent key from repository secrets.
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KS"
+            echo "PURU_KEYSTORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD:-puru-launcher}" >> "$GITHUB_ENV"
+            echo "PURU_KEY_ALIAS=${ANDROID_KEY_ALIAS:-puru}" >> "$GITHUB_ENV"
+            echo "PURU_KEY_PASSWORD=${ANDROID_KEY_PASSWORD:-puru-launcher}" >> "$GITHUB_ENV"
+            echo "signing with the keystore from secrets"
+          else
+            if [ ! -f "$KS" ]; then
+              # Throwaway key, cached between runs so updates stay installable.
+              keytool -genkeypair -v -keystore "$KS" -alias puru -keyalg RSA -keysize 2048 \
+                -validity 36500 -storepass puru-launcher -keypass puru-launcher \
+                -dname "CN=PURU-AI Launcher, O=puru, C=ID"
+            fi
+            echo "PURU_KEYSTORE_PASSWORD=puru-launcher" >> "$GITHUB_ENV"
+            echo "PURU_KEY_ALIAS=puru" >> "$GITHUB_ENV"
+            echo "PURU_KEY_PASSWORD=puru-launcher" >> "$GITHUB_ENV"
+            echo "signing with the cached generated keystore"
+          fi
+          echo "PURU_KEYSTORE=$KS" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Rename APK
+        if: success()
+        run: |
+          set -euo pipefail
+          cd android/app/build/outputs/apk/release
+          for apk in *.apk; do
+            mv "$apk" "puru-launcher-${PURU_VERSION_NAME}.apk"
+          done
+          ls -lh
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: puru-launcher-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+      - name: Attach APK to release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release may still be under construction when this workflow is
+          # called, so retry briefly instead of failing on a race.
+          for attempt in $(seq 1 15); do
+            if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+              if gh release upload "${RELEASE_TAG}" \
+                android/app/build/outputs/apk/release/*.apk --clobber; then
+                echo "APK attached to ${RELEASE_TAG}"
+                exit 0
+              fi
+            fi
+            echo "release ${RELEASE_TAG} not ready, retry ${attempt}"
+            sleep 20
+          done
+          echo "release never showed up; the APK stays in the run artifact"
+          exit 1
+
+      - name: Publish build evidence
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Job logs need admin rights, so the interesting bits of every build
+          # land on the debug-android-build branch where they can be read.
+          set -eo pipefail
+          OUT="$(mktemp -d)"
+          APK="$(ls android/app/build/outputs/apk/release/*.apk 2>/dev/null | head -1 || true)"
+          {
+            echo "== run =="
+            echo "sha ${GITHUB_SHA} ref ${GITHUB_REF} event ${GITHUB_EVENT_NAME}"
+            echo "release tag ${RELEASE_TAG:-none} version ${PURU_VERSION_NAME:-?} code ${PURU_VERSION_CODE:-?}"
+            echo
+            echo "== puru binaries (GOOS=android + cgo, DNS via bionic) =="
+            file android/app/src/main/jniLibs/arm64-v8a/libpuru.so android/app/src/main/jniLibs/armeabi-v7a/libpuru.so 2>/dev/null || true
+            ls -l android/app/src/main/jniLibs/*/libpuru.so 2>/dev/null || true
+            READELF="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+            "$READELF" -l android/app/src/main/jniLibs/arm64-v8a/libpuru.so 2>/dev/null | grep -E "Type:|interpreter" || true
+            echo
+            echo "== APK =="
+            if [ -n "$APK" ]; then
+              ls -l "$APK"
+              echo
+              echo "== zip entries =="
+              unzip -l "$APK" | grep -E "lib/|\.dex|META-INF" || true
+              echo
+              echo "== aapt2 badging =="
+              "${ANDROID_SDK_ROOT}/build-tools/35.0.0/aapt2" dump badging "$APK" 2>&1 | grep -E \
+                "package:|sdkVersion|application-label:|launchable-activity|native-code|uses-permission" || true
+              echo
+              echo "== merged manifest =="
+              find android/app/build/intermediates -name AndroidManifest.xml -path "*merged*" -exec cat {} \; 2>/dev/null || true
+            else
+              echo "no APK produced"
+            fi
+            echo
+            echo "== gradle log (tail) =="
+            tail -c 60000 "$RUNNER_TEMP/gradle.log" 2>/dev/null || true
+          } > "$OUT/android-build.txt" 2>&1 || true
+          cd "$OUT"
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git checkout -q -b debug-android-build
+          git add -A
+          git commit -q -m "Android build evidence from ${GITHUB_SHA::7}" || true
+          for attempt in 1 2 3; do
+            if git push -q -f origin debug-android-build; then
+              echo "evidence pushed to debug-android-build"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "could not push the build evidence"
